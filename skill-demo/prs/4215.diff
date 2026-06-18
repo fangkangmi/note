@@ -1,0 +1,249 @@
+diff --git a/backend/src/api/public/v1/packages/getPackage.ts b/backend/src/api/public/v1/packages/getPackage.ts
+index 06132996e1..bfb9cd36a7 100644
+--- a/backend/src/api/public/v1/packages/getPackage.ts
++++ b/backend/src/api/public/v1/packages/getPackage.ts
+@@ -93,6 +93,8 @@ export async function getPackage(req: Request, res: Response): Promise<void> {
+       status: (pkg.stewardshipStatus ?? 'unassigned') as StewardshipStatus,
+       stewards: stewardshipSummary?.stewards ?? null,
+       lastActivityAt: stewardshipSummary?.lastActivityAt ?? null,
++      resolutionPath: pkg.stewardshipResolutionPath ?? null,
++      statusNote: pkg.stewardshipStatusNote ?? null,
+     },
+     history: {},
+   })
+diff --git a/backend/src/api/public/v1/packages/openapi.yaml b/backend/src/api/public/v1/packages/openapi.yaml
+index 17bf9d3aab..9ad19e6899 100644
+--- a/backend/src/api/public/v1/packages/openapi.yaml
++++ b/backend/src/api/public/v1/packages/openapi.yaml
+@@ -85,14 +85,17 @@ components:
+ 
+     Steward:
+       type: object
+-      required: [userId, name, role, assignedAt]
++      required: [userId, role, assignedAt]
+       properties:
+         userId:
+           type: string
+-          description: LFID.
+-          example: jdoe
++          description: Auth0 sub of the assigned steward.
++          example: abc123
+         name:
+-          type: string
++          type:
++            - string
++            - 'null'
++          description: Display name of the steward. Null if not available.
+           example: Jonathan R.
+         role:
+           type: string
+@@ -418,12 +421,12 @@ components:
+                     - 'null'
+         stewardship:
+           type: object
+-          description: Stewardship state. In v1 always unassigned with no stewards or activity.
++          description: Stewardship state.
+           properties:
+             status:
+               $ref: '#/components/schemas/StewardshipStatus'
+             stewards:
+-              description: Assigned stewards or null. Null in v1.
++              description: Assigned stewards or null.
+               oneOf:
+                 - type: array
+                   items:
+@@ -434,7 +437,16 @@ components:
+                 - string
+                 - 'null'
+               format: date-time
+-              description: Null in v1.
++            resolutionPath:
++              type:
++                - string
++                - 'null'
++              description: Set on `escalated` status. Null for all other statuses.
++            statusNote:
++              type:
++                - string
++                - 'null'
++              description: Free-text note for the current status.
+         history:
+           type: object
+           description: Package history data. Empty in v1.
+diff --git a/backend/src/api/public/v1/stewardships/openapi.yaml b/backend/src/api/public/v1/stewardships/openapi.yaml
+index 65a6d824be..50ee9bb96d 100644
+--- a/backend/src/api/public/v1/stewardships/openapi.yaml
++++ b/backend/src/api/public/v1/stewardships/openapi.yaml
+@@ -94,6 +94,17 @@ components:
+             - stepped_down
+             - no_longer_critical
+             - 'null'
++        resolutionPath:
++          description: Set on `escalated` status. Null for all other statuses.
++          oneOf:
++            - $ref: '#/components/schemas/EscalationResolutionPath'
++            - type: 'null'
++        statusNote:
++          type:
++            - string
++            - 'null'
++          description: Free-text note for the current status. Set by escalate or updateStatus. Null on open.
++          example: Contacted maintainer, no response after 30 days.
+         createdAt:
+           type: string
+           format: date-time
+@@ -115,6 +126,12 @@ components:
+           type: string
+           description: Auth0 sub of the assigned steward.
+           example: abc123
++        name:
++          type:
++            - string
++            - 'null'
++          description: Display name of the steward. Null if not available.
++          example: Jonathan R.
+         role:
+           type: string
+           enum: [lead, co_steward]
+diff --git a/backend/src/osspckgs/migrations/V1781300000__stewardship-status-path-note.sql b/backend/src/osspckgs/migrations/V1781300000__stewardship-status-path-note.sql
+new file mode 100644
+index 0000000000..081df73dc9
+--- /dev/null
++++ b/backend/src/osspckgs/migrations/V1781300000__stewardship-status-path-note.sql
+@@ -0,0 +1,3 @@
++ALTER TABLE stewardships
++    ADD COLUMN IF NOT EXISTS resolution_path TEXT,
++    ADD COLUMN IF NOT EXISTS status_note     TEXT;
+diff --git a/services/libs/data-access-layer/src/osspckgs/api.ts b/services/libs/data-access-layer/src/osspckgs/api.ts
+index 04a899c66a..22951cc3a8 100644
+--- a/services/libs/data-access-layer/src/osspckgs/api.ts
++++ b/services/libs/data-access-layer/src/osspckgs/api.ts
+@@ -276,6 +276,8 @@ export interface PackageDetailRow {
+   stewardshipId: string | null
+   stewardshipStatus: string | null
+   stewardshipLastStatusAt: Date | null
++  stewardshipResolutionPath: string | null
++  stewardshipStatusNote: string | null
+   // from package_repos + repos
+   repoUrl: string | null
+   repoMappingConfidence: number | null
+@@ -319,6 +321,8 @@ export async function getPackageDetailByPurl(
+       s.id::text AS "stewardshipId",
+       s.status AS "stewardshipStatus",
+       s.last_status_at AS "stewardshipLastStatusAt",
++      s.resolution_path AS "stewardshipResolutionPath",
++      s.status_note AS "stewardshipStatusNote",
+       -- best repo link (highest confidence, prefer declared)
+       r.url AS "repoUrl",
+       pr.confidence AS "repoMappingConfidence",
+diff --git a/services/libs/data-access-layer/src/osspckgs/stewardships.ts b/services/libs/data-access-layer/src/osspckgs/stewardships.ts
+index 1fde1feea3..8c9c7c4abe 100644
+--- a/services/libs/data-access-layer/src/osspckgs/stewardships.ts
++++ b/services/libs/data-access-layer/src/osspckgs/stewardships.ts
+@@ -9,6 +9,8 @@ export interface StewardshipRecord {
+   openedAt: string | null
+   lastStatusAt: string | null
+   inactiveReason: string | null
++  resolutionPath: string | null
++  statusNote: string | null
+   createdAt: string
+   updatedAt: string
+ }
+@@ -17,6 +19,7 @@ export interface StewardshipStewardRecord {
+   id: string
+   stewardshipId: string
+   userId: string
++  name: string | null
+   role: string
+   assignedAt: string
+   assignedBy: string | null
+@@ -89,6 +92,7 @@ function mapStewardStewardRow(row: Record<string, unknown>): StewardshipStewardR
+     id: String(row.id),
+     stewardshipId: String(row.stewardship_id),
+     userId: String(row.user_id),
++    name: null,
+     role: String(row.role),
+     assignedAt: toIso(row.assigned_at),
+     assignedBy: row.assigned_by ? String(row.assigned_by) : null,
+@@ -105,6 +109,8 @@ function mapStewardshipRow(row: Record<string, unknown>): StewardshipRecord {
+     openedAt: row.opened_at ? toIso(row.opened_at) : null,
+     lastStatusAt: row.last_status_at ? toIso(row.last_status_at) : null,
+     inactiveReason: row.inactive_reason ? String(row.inactive_reason) : null,
++    resolutionPath: row.resolution_path ? String(row.resolution_path) : null,
++    statusNote: row.status_note ? String(row.status_note) : null,
+     createdAt: toIso(row.created_at),
+     updatedAt: toIso(row.updated_at),
+   }
+@@ -116,7 +122,7 @@ export async function getStewardshipById(
+ ): Promise<StewardshipRecord | null> {
+   const row: Record<string, unknown> | null = await qx.selectOneOrNone(
+     `SELECT id, package_id, status, origin, version, opened_at, last_status_at,
+-            inactive_reason, created_at, updated_at
++            inactive_reason, resolution_path, status_note, created_at, updated_at
+      FROM stewardships
+      WHERE id = $(id)`,
+     { id },
+@@ -151,12 +157,14 @@ export async function openStewardshipByPurl(
+       FROM pkg
+       ON CONFLICT (package_id) DO UPDATE
+         SET status          = 'open',
+-            opened_at       = COALESCE(stewardships.opened_at, NOW()),
++            opened_at       = NOW(),
+             last_status_at  = NOW(),
+             inactive_reason = NULL,
++            resolution_path = NULL,
++            status_note     = NULL,
+             updated_at      = NOW()
+       RETURNING id, package_id, status, origin, version, opened_at,
+-                last_status_at, inactive_reason, created_at, updated_at
++                last_status_at, inactive_reason, resolution_path, status_note, created_at, updated_at
+     ),
+     _log AS (
+       INSERT INTO stewardship_activity (stewardship_id, actor_user_id, actor_type, activity_type, content)
+@@ -288,10 +296,12 @@ export async function escalateStewardship(
+       SET status          = 'escalated',
+           last_status_at  = NOW(),
+           inactive_reason = NULL,
++          resolution_path = $(resolutionPath),
++          status_note     = $(statusNote),
+           updated_at      = NOW()
+       WHERE id = $(stewardshipId)
+       RETURNING id, package_id, status, origin, version, opened_at,
+-                last_status_at, inactive_reason, created_at, updated_at
++                last_status_at, inactive_reason, resolution_path, status_note, created_at, updated_at
+     ),
+     _log AS (
+       INSERT INTO stewardship_activity
+@@ -304,6 +314,8 @@ export async function escalateStewardship(
+     `,
+     {
+       stewardshipId,
++      resolutionPath: data.resolutionPath,
++      statusNote: data.notes ?? null,
+       actorUserId: data.actorUserId,
+       content: `Escalated with resolution path: ${data.resolutionPath}`,
+       metadata: JSON.stringify({
+@@ -353,11 +365,13 @@ export async function updateStewardshipStatus(
+       UPDATE stewardships
+       SET status          = $(status),
+           last_status_at  = NOW(),
+-          inactive_reason = CASE WHEN $(status) = 'inactive' THEN $(inactiveReason) ELSE NULL END,
++          inactive_reason = CASE WHEN $(status) = 'inactive' THEN $(inactiveReason) ELSE inactive_reason END,
++          resolution_path = NULL,
++          status_note     = $(statusNote),
+           updated_at      = NOW()
+       WHERE id = $(stewardshipId)
+       RETURNING id, package_id, status, origin, version, opened_at,
+-                last_status_at, inactive_reason, created_at, updated_at
++                last_status_at, inactive_reason, resolution_path, status_note, created_at, updated_at
+     ),
+     _log AS (
+       INSERT INTO stewardship_activity
+@@ -372,6 +386,7 @@ export async function updateStewardshipStatus(
+       stewardshipId,
+       status: data.status,
+       inactiveReason: data.inactiveReason ?? null,
++      statusNote: data.notes ?? null,
+       actorUserId: data.actorUserId,
+       content: `Status updated to ${data.status}`,
+       metadata: JSON.stringify({

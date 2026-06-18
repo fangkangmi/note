@@ -1,0 +1,195 @@
+diff --git a/backend/src/osspckgs/migrations/V1781262276__rank_packages_cumulative_coverage.sql b/backend/src/osspckgs/migrations/V1781262276__rank_packages_cumulative_coverage.sql
+new file mode 100644
+index 0000000000..89340c6aff
+--- /dev/null
++++ b/backend/src/osspckgs/migrations/V1781262276__rank_packages_cumulative_coverage.sql
+@@ -0,0 +1,116 @@
++-- Two related changes bundled here:
++--
++-- 1. package_criticality_spotlight: replace text-based (ecosystem, namespace, name)
++--    matching with a package_id FK so the spotlight join uses an indexed integer key.
++--
++-- 2. rank_packages(): replace the weighted PERCENT_RANK formula and arbitrary
++--    per-ecosystem top-N caps with cumulative-coverage scoring.
++--    The smallest set of packages that together account for coverage_cutoff (default 90%)
++--    of each signal is critical. impact = average of (1 − cumulative_coverage) across
++--    available signals. is_critical = true if in that set for any signal.
++
++-- ── 1. package_criticality_spotlight schema change ───────────────────────────
++
++DROP INDEX IF EXISTS package_criticality_spotlight_ecosystem_coalesce_name_idx;
++
++ALTER TABLE package_criticality_spotlight
++    ADD COLUMN IF NOT EXISTS package_id bigint NOT NULL REFERENCES packages(id),
++    DROP COLUMN IF EXISTS name,
++    DROP COLUMN IF EXISTS namespace;
++
++CREATE UNIQUE INDEX IF NOT EXISTS package_criticality_spotlight_package_id_idx
++    ON package_criticality_spotlight (package_id);
++
++-- ── 2. rank_packages() ───────────────────────────────────────────────────────
++
++DROP FUNCTION IF EXISTS rank_packages(numeric, numeric, numeric, jsonb);
++
++CREATE OR REPLACE FUNCTION rank_packages(
++    coverage_cutoff numeric DEFAULT 0.90,
++    ecosystems      text[]  DEFAULT NULL
++)
++RETURNS TABLE(processed_rows int)
++LANGUAGE plpgsql AS $$
++DECLARE
++    processed_count      int;
++    effective_ecosystems text[];
++BEGIN
++    IF ecosystems IS NULL THEN
++        SELECT ARRAY_AGG(DISTINCT ecosystem)
++          INTO effective_ecosystems
++          FROM packages;
++    ELSE
++        effective_ecosystems := ecosystems;
++    END IF;
++
++    WITH base AS (
++        SELECT
++            id,
++            ecosystem,
++            COALESCE(downloads_last_30d,         0) AS downloads,
++            COALESCE(dependent_count,            0) AS direct_dependents,
++            COALESCE(transitive_dependent_count, 0) AS transitive_dependents,
++            SUM(COALESCE(downloads_last_30d,         0)) OVER (PARTITION BY ecosystem) AS ecosystem_total_downloads,
++            SUM(COALESCE(dependent_count,            0)) OVER (PARTITION BY ecosystem) AS ecosystem_total_direct_dependents,
++            SUM(COALESCE(transitive_dependent_count, 0)) OVER (PARTITION BY ecosystem) AS ecosystem_total_transitive_dependents
++        FROM packages
++        WHERE ecosystem = ANY(effective_ecosystems)
++    ),
++    walked AS (
++        -- One row per (package × signal). Signals with a zero ecosystem total are
++        -- excluded so they don't factor into the average (e.g. downloads for maven).
++        -- cumulative_share_exclusive for the top-ranked package equals 0 by arithmetic
++        -- (sum of rows above it is 0), so the top package is always inside the critical set.
++        SELECT
++            id,
++            ecosystem,
++            SUM(signal_value) OVER coverage_window / ecosystem_signal_total::numeric                  AS cumulative_share_inclusive,
++            (SUM(signal_value) OVER coverage_window - signal_value) / ecosystem_signal_total::numeric AS cumulative_share_exclusive
++        FROM base
++        CROSS JOIN LATERAL (VALUES
++            ('downloads',             downloads,             ecosystem_total_downloads),
++            ('direct_dependents',     direct_dependents,     ecosystem_total_direct_dependents),
++            ('transitive_dependents', transitive_dependents, ecosystem_total_transitive_dependents)
++        ) AS signal(signal_name, signal_value, ecosystem_signal_total)
++        WHERE ecosystem_signal_total > 0
++        WINDOW coverage_window AS (
++            PARTITION BY ecosystem, signal_name
++            ORDER BY signal_value DESC, id
++            ROWS UNBOUNDED PRECEDING
++        )
++    ),
++    combined AS (
++        SELECT
++            id,
++            ecosystem,
++            AVG(1.0 - cumulative_share_inclusive)::numeric(10, 4) AS new_impact,
++            BOOL_OR(cumulative_share_exclusive < coverage_cutoff)  AS new_is_critical
++        FROM walked
++        GROUP BY id, ecosystem
++    ),
++    final AS (
++        SELECT
++            combined.id,
++            combined.new_impact,
++            combined.new_is_critical OR (spotlight.package_id IS NOT NULL) AS new_is_critical,
++            ROW_NUMBER() OVER (
++                PARTITION BY combined.ecosystem
++                ORDER BY combined.new_impact DESC NULLS LAST, combined.id
++            ) AS new_rank_in_ecosystem
++        FROM combined
++        LEFT JOIN package_criticality_spotlight spotlight ON spotlight.package_id = combined.id
++    )
++    UPDATE packages p
++       SET impact             = final.new_impact,
++           is_critical        = final.new_is_critical,
++           rank_in_ecosystem  = final.new_rank_in_ecosystem,
++           last_rank_pass_at  = NOW(),
++           last_synced_at     = NOW()
++      FROM final
++     WHERE p.id = final.id;
++
++    GET DIAGNOSTICS processed_count = ROW_COUNT;
++
++    RETURN QUERY SELECT processed_count;
++END;
++$$;
+diff --git a/services/apps/packages_worker/src/criticality/run-impact.ts b/services/apps/packages_worker/src/criticality/run-impact.ts
+index 9c952e071f..eb3162a5c6 100644
+--- a/services/apps/packages_worker/src/criticality/run-impact.ts
++++ b/services/apps/packages_worker/src/criticality/run-impact.ts
+@@ -5,12 +5,12 @@
+  *
+  * Usage (from services/apps/packages_worker):
+  *   pnpm run:impact
+- *   pnpm run:impact --top-n '{"cargo":75000,"maven":150000}'
+- *   pnpm run:impact --w-downloads 0.30 --w-dep-pkgs 0.20 --w-transitive 0.50
++ *   pnpm run:impact --cutoff 0.90
++ *   pnpm run:impact --ecosystems npm,go
++ *   pnpm run:impact --cutoff 0.85 --ecosystems npm
+  */
+ import { getPackagesDb } from '../db'
+ 
+-// Env defaults for local dev
+ process.env.CROWD_PACKAGES_DB_WRITE_HOST ??= 'localhost'
+ process.env.CROWD_PACKAGES_DB_PORT ??= '5434'
+ process.env.CROWD_PACKAGES_DB_DATABASE ??= 'packages-db'
+@@ -24,40 +24,31 @@ function parseArg(flag: string, fallback: number): number {
+   return Number.isNaN(v) ? fallback : v
+ }
+ 
+-function parseJsonArg(flag: string, fallback: string): string {
++function parseListArg(flag: string): string[] | null {
+   const idx = process.argv.indexOf(flag)
+-  return idx !== -1 ? process.argv[idx + 1] : fallback
++  if (idx === -1) return null
++  return process.argv[idx + 1].split(',').map((s) => s.trim())
+ }
+ 
+-const wDownloads = parseArg('--w-downloads', 0.25)
+-const wDepPkgs = parseArg('--w-dep-pkgs', 0.25)
+-const wTransitive = parseArg('--w-transitive', 0.5)
+-const topN = parseJsonArg('--top-n', '{"cargo":75000,"maven":150000}')
++const cutoff = parseArg('--cutoff', 0.9)
++const ecosystems = parseListArg('--ecosystems')
+ 
+ async function main() {
+-  if (Math.abs(wDownloads + wDepPkgs + wTransitive - 1.0) > 0.001) {
+-    console.error(
+-      `Weights must sum to 1.0, got ${(wDownloads + wDepPkgs + wTransitive).toFixed(3)}`,
+-    )
+-    process.exit(1)
+-  }
+-
+   console.log(`Running rank_packages()`)
+-  console.log(`  weights: downloads=${wDownloads}  dep_pkgs=${wDepPkgs}  transitive=${wTransitive}`)
+-  console.log(`  top-n  : ${topN}\n`)
++  console.log(`  cutoff    : ${cutoff}`)
++  console.log(`  ecosystems: ${ecosystems ? ecosystems.join(', ') : 'all'}\n`)
+ 
+   const qx = await getPackagesDb()
+   const t = Date.now()
+ 
+-  const [result] = await qx.select(
+-    `SELECT * FROM rank_packages($/wDownloads/, $/wDepPkgs/, $/wTransitive/, $/topN/::jsonb)`,
+-    { wDownloads, wDepPkgs, wTransitive, topN },
+-  )
++  const [result] = await qx.select(`SELECT * FROM rank_packages($/cutoff/, $/ecosystems/)`, {
++    cutoff,
++    ecosystems,
++  })
+ 
+   const elapsed = ((Date.now() - t) / 1000).toFixed(1)
+   console.log(`Done in ${elapsed}s`)
+-  console.log(`  scored_rows: ${result.scored_rows?.toLocaleString()}`)
+-  console.log(`  ranked_rows: ${result.ranked_rows?.toLocaleString()}`)
++  console.log(`  processed_rows: ${result.processed_rows?.toLocaleString()}`)
+ 
+   process.exit(0)
+ }

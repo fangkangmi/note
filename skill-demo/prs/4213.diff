@@ -1,0 +1,32 @@
+diff --git a/scripts/builders/packages.env b/scripts/builders/packages.env
+index 78bfffcba6..38006ad26a 100644
+--- a/scripts/builders/packages.env
++++ b/scripts/builders/packages.env
+@@ -1,4 +1,4 @@
+ DOCKERFILE="./services/docker/Dockerfile.packages"
+ CONTEXT="../"
+ REPO="sjc.ocir.io/axbydjxa5zuh/packages"
+-SERVICES="github-repos-enricher bq-dataset-ingest npm-worker maven-worker osv-worker"
++SERVICES="github-repos-enricher bq-dataset-ingest npm-worker maven-worker osv-worker dockerhub-sync"
+diff --git a/scripts/services/dockerhub-sync.yaml b/scripts/services/dockerhub-sync.yaml
+index 2d67c5b22c..6dcd7b99eb 100644
+--- a/scripts/services/dockerhub-sync.yaml
++++ b/scripts/services/dockerhub-sync.yaml
+@@ -16,7 +16,7 @@ services:
+   dockerhub-sync:
+     build:
+       context: ../../
+-      dockerfile: ./scripts/services/docker/Dockerfile.packages-worker
++      dockerfile: ./scripts/services/docker/Dockerfile.packages
+     command: 'pnpm run start:dockerhub-sync'
+     working_dir: /usr/crowd/app/services/apps/packages_worker
+     env_file:
+@@ -33,7 +33,7 @@ services:
+   dockerhub-sync-dev:
+     build:
+       context: ../../
+-      dockerfile: ./scripts/services/docker/Dockerfile.packages-worker
++      dockerfile: ./scripts/services/docker/Dockerfile.packages
+     command: 'pnpm run dev:dockerhub-sync'
+     working_dir: /usr/crowd/app/services/apps/packages_worker
+     # user: '${USER_ID}:${GROUP_ID}'

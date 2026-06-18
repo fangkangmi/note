@@ -1,0 +1,595 @@
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 5fa229af98..f0940720a1 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1086,6 +1086,9 @@ importers:
+       '@crowd/common':
+         specifier: workspace:*
+         version: link:../../libs/common
++      '@crowd/common_services':
++        specifier: workspace:*
++        version: link:../../libs/common_services
+       '@crowd/data-access-layer':
+         specifier: workspace:*
+         version: link:../../libs/data-access-layer
+@@ -1330,18 +1333,18 @@ importers:
+       '@temporalio/workflow':
+         specifier: ~1.17.2
+         version: 1.17.2
+-      jsonwebtoken:
+-        specifier: ^9.0.0
+-        version: 9.0.3
+-      semver:
+-        specifier: ^7.6.0
+-        version: 7.6.0
+       axios:
+         specifier: ^1.16.1
+         version: 1.16.1
+       fast-xml-parser:
+         specifier: ^5.8.0
+         version: 5.8.0
++      jsonwebtoken:
++        specifier: ^9.0.0
++        version: 9.0.3
++      semver:
++        specifier: ^7.6.0
++        version: 7.6.0
+       tsx:
+         specifier: ^4.7.1
+         version: 4.7.3
+diff --git a/services/apps/members_enrichment_worker/src/activities/member.ts b/services/apps/members_enrichment_worker/src/activities/member.ts
+index 06f41841f8..5c77c55c51 100644
+--- a/services/apps/members_enrichment_worker/src/activities/member.ts
++++ b/services/apps/members_enrichment_worker/src/activities/member.ts
+@@ -1,3 +1,4 @@
++import { CommonMemberService } from '@crowd/common_services'
+ import {
+   MemberField,
+   PgPromiseQueryExecutor,
+@@ -107,24 +108,17 @@ export async function mergeMembers(
+   primaryMemberId: string,
+   secondaryMemberId: string,
+ ): Promise<void> {
+-  const res = await fetch(
+-    `${process.env['CROWD_API_SERVICE_URL']}/member/${primaryMemberId}/merge`,
+-    {
+-      method: 'PUT',
+-      headers: {
+-        Authorization: `Bearer ${process.env['CROWD_API_SERVICE_USER_TOKEN']}`,
+-        'Content-Type': 'application/json',
+-      },
+-      body: JSON.stringify({
+-        memberToMerge: secondaryMemberId,
+-      }),
+-    },
+-  )
++  const qx = pgpQx(svc.postgres.writer.connection())
++  const memberService = new CommonMemberService(qx, svc.temporal, svc.log)
+ 
+-  if (res.status !== 200) {
+-    const body = await res.text()
+-    throw new Error(
+-      `Failed to merge member ${primaryMemberId} with ${secondaryMemberId}! Status: ${res.status}, Response: ${body}`,
+-    )
++  try {
++    await memberService.merge(primaryMemberId, secondaryMemberId, {
++      currentUser: {
++        id: process.env['CROWD_LF_AGENT_USER_ID'],
++      },
++    })
++  } catch (error) {
++    svc.log.error({ err: error }, 'Failed to merge members')
++    throw error
+   }
+ }
+diff --git a/services/apps/members_enrichment_worker/src/service.ts b/services/apps/members_enrichment_worker/src/service.ts
+index de64fdb209..5e1526df8e 100644
+--- a/services/apps/members_enrichment_worker/src/service.ts
++++ b/services/apps/members_enrichment_worker/src/service.ts
+@@ -11,6 +11,7 @@ const config: Config = {
+     'CROWD_ENRICHMENT_SERP_API_KEY',
+     'CROWD_ENRICHMENT_CRUSTDATA_URL',
+     'CROWD_ENRICHMENT_CRUSTDATA_API_KEY',
++    'CROWD_LF_AGENT_USER_ID',
+   ],
+   producer: {
+     enabled: false,
+diff --git a/services/apps/merge_suggestions_worker/package.json b/services/apps/merge_suggestions_worker/package.json
+index 50c2a3078b..10c4860b5d 100644
+--- a/services/apps/merge_suggestions_worker/package.json
++++ b/services/apps/merge_suggestions_worker/package.json
+@@ -17,6 +17,7 @@
+     "@crowd/archetype-standard": "workspace:*",
+     "@crowd/archetype-worker": "workspace:*",
+     "@crowd/common": "workspace:*",
++    "@crowd/common_services": "workspace:*",
+     "@crowd/data-access-layer": "workspace:*",
+     "@crowd/logging": "workspace:*",
+     "@crowd/opensearch": "workspace:*",
+diff --git a/services/apps/merge_suggestions_worker/src/activities/common.ts b/services/apps/merge_suggestions_worker/src/activities/common.ts
+index 93ccb17e59..510a34c8e5 100644
+--- a/services/apps/merge_suggestions_worker/src/activities/common.ts
++++ b/services/apps/merge_suggestions_worker/src/activities/common.ts
+@@ -4,6 +4,8 @@ import axios from 'axios'
+ import { performance } from 'perf_hooks'
+ 
+ import { IS_LLM_ENABLED } from '@crowd/common'
++import { CommonMemberService } from '@crowd/common_services'
++import { pgpQx } from '@crowd/data-access-layer'
+ import { ITenant } from '@crowd/data-access-layer/src/old/apps/merge_suggestions_worker//types'
+ import LLMSuggestionVerdictsRepository from '@crowd/data-access-layer/src/old/apps/merge_suggestions_worker/llmSuggestionVerdicts.repo'
+ import TenantRepository from '@crowd/data-access-layer/src/old/apps/merge_suggestions_worker/tenant.repo'
+@@ -102,22 +104,18 @@ export async function mergeMembers(
+   primaryMemberId: string,
+   secondaryMemberId: string,
+ ): Promise<void> {
+-  const url = `${process.env['CROWD_API_SERVICE_URL']}/member/${primaryMemberId}/merge`
+-  const requestOptions = {
+-    method: 'PUT',
+-    headers: {
+-      Authorization: `Bearer ${process.env['CROWD_API_SERVICE_USER_TOKEN']}`,
+-      'Content-Type': 'application/json',
+-    },
+-    data: {
+-      memberToMerge: secondaryMemberId,
+-    },
+-  }
++  const qx = pgpQx(svc.postgres.writer.connection())
++  const memberService = new CommonMemberService(qx, svc.temporal, svc.log)
+ 
+   try {
+-    await axios(url, requestOptions)
++    await memberService.merge(primaryMemberId, secondaryMemberId, {
++      currentUser: {
++        id: process.env['CROWD_LF_AGENT_USER_ID'],
++      },
++    })
+   } catch (error) {
+-    console.log(`Failed merging member wit status [${error.response?.status}]. Skipping!`)
++    svc.log.error({ err: error }, 'Failed to merge members')
++    throw error
+   }
+ }
+ 
+@@ -129,7 +127,7 @@ export async function mergeOrganizations(
+   const requestOptions = {
+     method: 'PUT',
+     headers: {
+-      Authorization: `Bearer ${process.env['CROWD_API_SERVICE_USER_TOKEN']}`,
++      Authorization: `Bearer ${process.env['CROWD_LF_AGENT_USER_TOKEN']}`,
+       'Content-Type': 'application/json',
+     },
+     data: {
+@@ -141,6 +139,7 @@ export async function mergeOrganizations(
+   try {
+     await axios(url, requestOptions)
+   } catch (error) {
+-    console.log(`Failed merging organization with status [${error.response?.status}]. Skipping!`)
++    svc.log.error({ err: error, status: error.response?.status }, 'Failed to merge organization')
++    throw error
+   }
+ }
+diff --git a/services/apps/merge_suggestions_worker/src/main.ts b/services/apps/merge_suggestions_worker/src/main.ts
+index cef1456e41..31a2cff22b 100644
+--- a/services/apps/merge_suggestions_worker/src/main.ts
++++ b/services/apps/merge_suggestions_worker/src/main.ts
+@@ -5,7 +5,13 @@ import { scheduleGenerateMemberMergeSuggestions } from './schedules/memberMergeS
+ import { scheduleGenerateOrganizationMergeSuggestions } from './schedules/organizationMergeSuggestions'
+ 
+ const config: Config = {
+-  envvars: [],
++  envvars: [
++    'CROWD_AWS_BEDROCK_ACCESS_KEY_ID',
++    'CROWD_AWS_BEDROCK_SECRET_ACCESS_KEY',
++    'CROWD_API_SERVICE_URL',
++    'CROWD_LF_AGENT_USER_ID',
++    'CROWD_LF_AGENT_USER_TOKEN',
++  ],
+   producer: {
+     enabled: false,
+   },
+diff --git a/services/apps/merge_suggestions_worker/src/workflows/mergeMembersWithLLM.ts b/services/apps/merge_suggestions_worker/src/workflows/mergeMembersWithLLM.ts
+index 03f0af6b1b..236c7f9ea9 100644
+--- a/services/apps/merge_suggestions_worker/src/workflows/mergeMembersWithLLM.ts
++++ b/services/apps/merge_suggestions_worker/src/workflows/mergeMembersWithLLM.ts
+@@ -2,20 +2,27 @@ import { continueAsNew, proxyActivities } from '@temporalio/workflow'
+ 
+ import { LLMSuggestionVerdictType, MemberMergeSuggestionTable } from '@crowd/types'
+ 
+-import * as commonActivities from '../activities/common'
+-import * as memberActivities from '../activities/memberMergeSuggestions'
++import type * as activities from '../activities'
+ import { ILLMResult, IProcessMergeMemberSuggestionsWithLLM } from '../types'
+ import { removeEmailLikeIdentitiesFromMember } from '../utils'
+ 
+-const memberActivitiesProxy = proxyActivities<typeof memberActivities>({
+-  startToCloseTimeout: '1 minute',
++const {
++  getRawMemberMergeSuggestions,
++  getMembersForLLMConsumption,
++  removeMemberMergeSuggestion,
++  addMemberSuggestionToNoMerge,
++} = proxyActivities<typeof activities>({
++  startToCloseTimeout: '2 minutes',
++  retry: { maximumAttempts: 3 },
+ })
+ 
+-const commonActivitiesProxy = proxyActivities<typeof commonActivities>({
+-  startToCloseTimeout: '5 minute',
++const { getLLMResult, saveLLMVerdict, mergeMembers } = proxyActivities<typeof activities>({
++  startToCloseTimeout: '5 minutes',
+   retry: {
+-    initialInterval: '10 seconds',
+-    maximumAttempts: 3,
++    initialInterval: '1 minute',
++    backoffCoefficient: 2,
++    maximumInterval: '4 minutes',
++    maximumAttempts: 4,
+   },
+ })
+ 
+@@ -60,32 +67,26 @@ export async function mergeMembersWithLLM(
+                   - This check must be performed before evaluating any other similarities
+                   Print 'true' if they are the same member, 'false' otherwise. No explanation required. Don't print anything else.`
+ 
+-  const suggestions = await memberActivitiesProxy.getRawMemberMergeSuggestions(
+-    args.similarity,
+-    SUGGESTIONS_PER_RUN,
+-  )
++  const suggestions = await getRawMemberMergeSuggestions(args.similarity, SUGGESTIONS_PER_RUN)
+ 
+   if (suggestions.length === 0) {
+     return
+   }
+ 
+   for (const suggestion of suggestions) {
+-    const members = await memberActivitiesProxy.getMembersForLLMConsumption(suggestion)
++    const members = await getMembersForLLMConsumption(suggestion)
+ 
+     if (members.length !== 2) {
+       console.log(`Failed getting members data in suggestion. Skipping suggestion: ${suggestion}`)
+-      await memberActivitiesProxy.removeMemberMergeSuggestion(
+-        suggestion,
+-        MemberMergeSuggestionTable.MEMBER_TO_MERGE_RAW,
+-      )
+-      await memberActivitiesProxy.removeMemberMergeSuggestion(
++      await removeMemberMergeSuggestion(suggestion, MemberMergeSuggestionTable.MEMBER_TO_MERGE_RAW)
++      await removeMemberMergeSuggestion(
+         suggestion,
+         MemberMergeSuggestionTable.MEMBER_TO_MERGE_FILTERED,
+       )
+       continue
+     }
+ 
+-    const llmResult: ILLMResult = await commonActivitiesProxy.getLLMResult(
++    const llmResult: ILLMResult = await getLLMResult(
+       members.map((member) => removeEmailLikeIdentitiesFromMember(member)),
+       MODEL_ID,
+       PROMPT,
+@@ -93,7 +94,7 @@ export async function mergeMembersWithLLM(
+       MODEL_ARGS,
+     )
+ 
+-    await commonActivitiesProxy.saveLLMVerdict({
++    await saveLLMVerdict({
+       type: LLMSuggestionVerdictType.MEMBER,
+       model: MODEL_ID,
+       primaryId: suggestion[0],
+@@ -109,20 +110,17 @@ export async function mergeMembersWithLLM(
+       console.log(
+         `LLM verdict says these two members are the same. Merging members: ${suggestion[0]} and ${suggestion[1]}!`,
+       )
+-      await commonActivitiesProxy.mergeMembers(suggestion[0], suggestion[1])
++      await mergeMembers(suggestion[0], suggestion[1])
+     } else {
+       console.log(
+         `LLM doesn't think these members are the same. Removing from suggestions and adding to no merge: ${suggestion[0]} and ${suggestion[1]}!`,
+       )
+-      await memberActivitiesProxy.removeMemberMergeSuggestion(
++      await removeMemberMergeSuggestion(
+         suggestion,
+         MemberMergeSuggestionTable.MEMBER_TO_MERGE_FILTERED,
+       )
+-      await memberActivitiesProxy.removeMemberMergeSuggestion(
+-        suggestion,
+-        MemberMergeSuggestionTable.MEMBER_TO_MERGE_RAW,
+-      )
+-      await memberActivitiesProxy.addMemberSuggestionToNoMerge(suggestion)
++      await removeMemberMergeSuggestion(suggestion, MemberMergeSuggestionTable.MEMBER_TO_MERGE_RAW)
++      await addMemberSuggestionToNoMerge(suggestion)
+     }
+   }
+ 
+diff --git a/services/apps/merge_suggestions_worker/src/workflows/mergeOrganizationsWithLLM.ts b/services/apps/merge_suggestions_worker/src/workflows/mergeOrganizationsWithLLM.ts
+index 0db492a789..7fe03221b1 100644
+--- a/services/apps/merge_suggestions_worker/src/workflows/mergeOrganizationsWithLLM.ts
++++ b/services/apps/merge_suggestions_worker/src/workflows/mergeOrganizationsWithLLM.ts
+@@ -2,19 +2,26 @@ import { continueAsNew, proxyActivities } from '@temporalio/workflow'
+ 
+ import { LLMSuggestionVerdictType, OrganizationMergeSuggestionTable } from '@crowd/types'
+ 
+-import * as commonActivities from '../activities/common'
+-import * as organizationActivities from '../activities/organizationMergeSuggestions'
++import type * as activities from '../activities'
+ import { ILLMResult, IProcessMergeOrganizationSuggestionsWithLLM } from '../types'
+ 
+-const organizationActivitiesProxy = proxyActivities<typeof organizationActivities>({
+-  startToCloseTimeout: '1 minute',
++const {
++  getRawOrganizationMergeSuggestions,
++  getOrganizationsForLLMConsumption,
++  removeOrganizationMergeSuggestions,
++  addOrganizationSuggestionToNoMerge,
++} = proxyActivities<typeof activities>({
++  startToCloseTimeout: '2 minutes',
++  retry: { maximumAttempts: 3 },
+ })
+ 
+-const commonActivitiesProxy = proxyActivities<typeof commonActivities>({
+-  startToCloseTimeout: '5 minute',
++const { getLLMResult, saveLLMVerdict, mergeOrganizations } = proxyActivities<typeof activities>({
++  startToCloseTimeout: '5 minutes',
+   retry: {
+-    initialInterval: '10 seconds',
+-    maximumAttempts: 3,
++    initialInterval: '1 minute',
++    backoffCoefficient: 2,
++    maximumInterval: '4 minutes',
++    maximumAttempts: 4,
+   },
+ })
+ 
+@@ -31,7 +38,7 @@ export async function mergeOrganizationsWithLLM(
+   }
+   const PROMPT = `Please compare and come up with a boolean answer if these two organizations are the same organization or not. Print 'true' if they are the same organization, 'false' otherwise. No explanation required. Don't print anything else.`
+ 
+-  const suggestions = await organizationActivitiesProxy.getRawOrganizationMergeSuggestions(
++  const suggestions = await getRawOrganizationMergeSuggestions(
+     args.tenantId,
+     args.similarity,
+     SUGGESTIONS_PER_RUN,
+@@ -44,25 +51,24 @@ export async function mergeOrganizationsWithLLM(
+   }
+ 
+   for (const suggestion of suggestions) {
+-    const organizations =
+-      await organizationActivitiesProxy.getOrganizationsForLLMConsumption(suggestion)
++    const organizations = await getOrganizationsForLLMConsumption(suggestion)
+ 
+     if (organizations.length !== 2) {
+       console.log(
+         `Failed getting organization data in suggestion. Skipping suggestion: ${suggestion}`,
+       )
+-      await organizationActivitiesProxy.removeOrganizationMergeSuggestions(
++      await removeOrganizationMergeSuggestions(
+         suggestion,
+         OrganizationMergeSuggestionTable.ORGANIZATION_TO_MERGE_FILTERED,
+       )
+-      await organizationActivitiesProxy.removeOrganizationMergeSuggestions(
++      await removeOrganizationMergeSuggestions(
+         suggestion,
+         OrganizationMergeSuggestionTable.ORGANIZATION_TO_MERGE_RAW,
+       )
+       continue
+     }
+ 
+-    const llmResult: ILLMResult = await commonActivitiesProxy.getLLMResult(
++    const llmResult: ILLMResult = await getLLMResult(
+       organizations,
+       MODEL_ID,
+       PROMPT,
+@@ -70,7 +76,7 @@ export async function mergeOrganizationsWithLLM(
+       MODEL_ARGS,
+     )
+ 
+-    await commonActivitiesProxy.saveLLMVerdict({
++    await saveLLMVerdict({
+       type: LLMSuggestionVerdictType.ORGANIZATION,
+       model: MODEL_ID,
+       primaryId: suggestion[0],
+@@ -86,20 +92,20 @@ export async function mergeOrganizationsWithLLM(
+       console.log(
+         `LLM verdict says these two orgs are the same. Merging organizations: ${suggestion[0]} and ${suggestion[1]}!`,
+       )
+-      await commonActivitiesProxy.mergeOrganizations(suggestion[0], suggestion[1])
++      await mergeOrganizations(suggestion[0], suggestion[1])
+     } else {
+       console.log(
+         `LLM doesn't think these orgs are the same. Removing from suggestions and adding to no merge: ${suggestion[0]} and ${suggestion[1]}!`,
+       )
+-      await organizationActivitiesProxy.removeOrganizationMergeSuggestions(
++      await removeOrganizationMergeSuggestions(
+         suggestion,
+         OrganizationMergeSuggestionTable.ORGANIZATION_TO_MERGE_FILTERED,
+       )
+-      await organizationActivitiesProxy.removeOrganizationMergeSuggestions(
++      await removeOrganizationMergeSuggestions(
+         suggestion,
+         OrganizationMergeSuggestionTable.ORGANIZATION_TO_MERGE_RAW,
+       )
+-      await organizationActivitiesProxy.addOrganizationSuggestionToNoMerge(suggestion)
++      await addOrganizationSuggestionToNoMerge(suggestion)
+     }
+   }
+ 
+diff --git a/services/apps/profiles_worker/src/activities/member/botSuggestion.ts b/services/apps/profiles_worker/src/activities/member/botSuggestion.ts
+index bde90b3475..a261531108 100644
+--- a/services/apps/profiles_worker/src/activities/member/botSuggestion.ts
++++ b/services/apps/profiles_worker/src/activities/member/botSuggestion.ts
+@@ -58,7 +58,7 @@ export async function updateMemberAttributes(
+   const requestOptions = {
+     method: 'PATCH',
+     headers: {
+-      Authorization: `Bearer ${process.env['CROWD_API_SERVICE_USER_TOKEN']}`,
++      Authorization: `Bearer ${process.env['CROWD_LF_AGENT_USER_TOKEN']}`,
+       'Content-Type': 'application/json',
+     },
+     data: {
+diff --git a/services/apps/profiles_worker/src/main.ts b/services/apps/profiles_worker/src/main.ts
+index 168b431054..e5db837665 100644
+--- a/services/apps/profiles_worker/src/main.ts
++++ b/services/apps/profiles_worker/src/main.ts
+@@ -9,6 +9,13 @@ import {
+ } from './schedules/refreshDisplayAggregates'
+ 
+ const config: Config = {
++  envvars: [
++    'CROWD_AWS_BEDROCK_ACCESS_KEY_ID',
++    'CROWD_AWS_BEDROCK_SECRET_ACCESS_KEY',
++    'CROWD_API_SERVICE_URL',
++    'CROWD_LF_AGENT_USER_TOKEN',
++    'CROWD_SEARCH_SYNC_API_URL',
++  ],
+   producer: {
+     enabled: false,
+   },
+diff --git a/services/apps/script_executor_worker/src/activities/common.ts b/services/apps/script_executor_worker/src/activities/common.ts
+index 5ab21d2ac5..fd9b7574eb 100644
+--- a/services/apps/script_executor_worker/src/activities/common.ts
++++ b/services/apps/script_executor_worker/src/activities/common.ts
+@@ -1,7 +1,7 @@
+ import axios from 'axios'
+ 
+-import { signalMemberUpdate } from '@crowd/common_services'
+-import { findOrganizationSegments } from '@crowd/data-access-layer/src/old/apps/entity_merging_worker'
++import { CommonMemberService, signalMemberUpdate } from '@crowd/common_services'
++import { pgpQx } from '@crowd/data-access-layer'
+ import {
+   IMemberIdentity,
+   IMemberUnmergeBackup,
+@@ -16,22 +16,18 @@ export async function mergeMembers(
+   primaryMemberId: string,
+   secondaryMemberId: string,
+ ): Promise<void> {
+-  const url = `${process.env['CROWD_API_SERVICE_URL']}/member/${primaryMemberId}/merge`
+-  const requestOptions = {
+-    method: 'PUT',
+-    headers: {
+-      Authorization: `Bearer ${process.env['CROWD_API_SERVICE_USER_TOKEN']}`,
+-      'Content-Type': 'application/json',
+-    },
+-    data: {
+-      memberToMerge: secondaryMemberId,
+-    },
+-  }
++  const qx = pgpQx(svc.postgres.writer.connection())
++  const memberService = new CommonMemberService(qx, svc.temporal, svc.log)
+ 
+   try {
+-    await axios(url, requestOptions)
++    await memberService.merge(primaryMemberId, secondaryMemberId, {
++      currentUser: {
++        id: process.env['CROWD_LF_AGENT_USER_ID'],
++      },
++    })
+   } catch (error) {
+-    console.log(`Failed merging member wit status [${error.response.status}]. Skipping!`)
++    svc.log.error({ err: error }, 'Failed to merge members')
++    throw error
+   }
+ }
+ 
+@@ -43,7 +39,7 @@ export async function unmergeMembers(
+   const requestOptions = {
+     method: 'POST',
+     headers: {
+-      Authorization: `Bearer ${process.env['CROWD_API_SERVICE_USER_TOKEN']}`,
++      Authorization: `Bearer ${process.env['CROWD_LF_AGENT_USER_TOKEN']}`,
+       'Content-Type': 'application/json',
+     },
+     data: {
+@@ -54,7 +50,8 @@ export async function unmergeMembers(
+   try {
+     await axios(url, requestOptions)
+   } catch (error) {
+-    console.log(`Failed unmerging member with status [${error.response.status}]. Skipping!`)
++    svc.log.error({ err: error, status: error.response?.status }, 'Failed to unmerge member')
++    throw error
+   }
+ }
+ 
+@@ -66,7 +63,7 @@ export async function unmergeMembersPreview(
+   const requestOptions = {
+     method: 'POST',
+     headers: {
+-      Authorization: `Bearer ${process.env['CROWD_API_SERVICE_USER_TOKEN']}`,
++      Authorization: `Bearer ${process.env['CROWD_LF_AGENT_USER_TOKEN']}`,
+       'Content-Type': 'application/json',
+     },
+     data: {
+@@ -80,7 +77,11 @@ export async function unmergeMembersPreview(
+     const result = await axios(url, requestOptions)
+     return result.data
+   } catch (error) {
+-    console.log(`Failed unmerging member with status [${error.response.status}]. Skipping!`)
++    svc.log.error(
++      { err: error, status: error.response?.status },
++      'Failed to unmerge member preview',
++    )
++    throw error
+   }
+ }
+ 
+@@ -89,17 +90,11 @@ export async function mergeOrganizations(
+   secondaryOrgId: string,
+   segmentId?: string,
+ ): Promise<void> {
+-  // if segmentId doesn't exist we can get just one segment org belongs to and use that
+-  if (!segmentId) {
+-    const result = await findOrganizationSegments(svc.postgres.writer, primaryOrgId)
+-    segmentId = result?.segmentIds?.[0] ?? undefined
+-  }
+-
+   const url = `${process.env['CROWD_API_SERVICE_URL']}/organization/${primaryOrgId}/merge`
+   const requestOptions = {
+     method: 'PUT',
+     headers: {
+-      Authorization: `Bearer ${process.env['CROWD_API_SERVICE_USER_TOKEN']}`,
++      Authorization: `Bearer ${process.env['CROWD_LF_AGENT_USER_TOKEN']}`,
+       'Content-Type': 'application/json',
+     },
+     data: {
+@@ -111,7 +106,8 @@ export async function mergeOrganizations(
+   try {
+     await axios(url, requestOptions)
+   } catch (error) {
+-    console.log(`Failed merging organization with status [${error.response.status}]. Skipping!`)
++    svc.log.error({ err: error, status: error.response?.status }, 'Failed to merge organization')
++    throw error
+   }
+ }
+ 
+diff --git a/services/apps/script_executor_worker/src/main.ts b/services/apps/script_executor_worker/src/main.ts
+index 9047acaf13..645f060c34 100644
+--- a/services/apps/script_executor_worker/src/main.ts
++++ b/services/apps/script_executor_worker/src/main.ts
+@@ -9,7 +9,12 @@ import {
+ } from './schedules/scheduleCleanup'
+ 
+ const config: Config = {
+-  envvars: ['CROWD_TINYBIRD_ACCESS_TOKEN'],
++  envvars: [
++    'CROWD_TINYBIRD_ACCESS_TOKEN',
++    'CROWD_API_SERVICE_URL',
++    'CROWD_LF_AGENT_USER_ID',
++    'CROWD_LF_AGENT_USER_TOKEN',
++  ],
+   producer: {
+     enabled: false,
+   },
+diff --git a/services/libs/audit-logs/src/svc.ts b/services/libs/audit-logs/src/svc.ts
+index 95a7e4fc49..889ba5bc8d 100644
+--- a/services/libs/audit-logs/src/svc.ts
++++ b/services/libs/audit-logs/src/svc.ts
+@@ -62,9 +62,9 @@ export async function captureApiChange<T>(
+   let auditOptions: AuditLogRequestOptions
+   if (options) {
+     auditOptions = convertRepositoryOptions(options)
+-  } else if (process.env.CROWD_API_SERVICE_USER_ID) {
++  } else if (process.env.CROWD_LF_AGENT_USER_ID) {
+     auditOptions = {
+-      actorId: process.env.CROWD_API_SERVICE_USER_ID,
++      actorId: process.env.CROWD_LF_AGENT_USER_ID,
+       actorType: ActorType.SERVICE,
+       requestId: generateUUIDv1(),
+       ipAddress: '127.0.0.1',

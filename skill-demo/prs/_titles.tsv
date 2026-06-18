@@ -1,0 +1,60 @@
+4227	fix: skip bot members from stint inference and lfid enrichment (CM-1260)
+4225	fix: dedupe overlapping email-domain member organizations (CM-1189)
+4221	feat: refactor all apis in new path (CM-1236)
+4219	fix: guard against empty relevantPayloads before querying activityRelations
+4218	feat: add new 4 endpoints (CM-1236)
+4217	feat: add packages ranking workflow and dependent_counts row-count guard (CM-1222)
+4216	feat: add per-status package counts to list endpoint (CM-1245)
+4215	fix: add resolution path
+4214	fix: privateer binary version compatibility with pvtr-github-repo-scanner v0.23.2 (IN-1170)
+4213	chore: prepare dockerhub-sync worker deployment
+4212	fix: stale kafka connection recovery [CM-1246]
+4211	feat: add admin apis (CM-1235)
+4209	fix: remove criticality_score
+4208	fix: bq dataset ingest worker didnt start because of temporal lib issue (CM-1227)
+4207	fix: optimize getRawSuggestions queries for member and organization
+4206	feat: add public endpoint to create member (CM-1224)
+4205	fix: tinybird datasources (CM-1219)
+4204	feat: replace rank_packages() with cumulative-coverage impact scoring [CM-1228]
+4203	feat: add filters and risk sort to GET /v1/packages
+4202	fix: stweardship bug fixes (CM-1218)
+4201	fix: purls encoding (CM-1218)
+4200	fix: use LF agent audit fallback for worker member merges
+4199	feat: add branch protection fields [CM-1220]
+4197	fix: stop silently skipping failed llm member merges (CM-1188)
+4196	chore: import scorecards next to deps.dev data from openssf dataset (CM-1227)
+4195	feat: stewardship api unmock (CM-1218)
+4194	fix: consider 401 errors as trasient
+4193	feat: add backfill script (CM-1218)
+4192	fix: derive activity counts from paged nodes instead of search [CM-1220]
+4191	feat: adding stewardship tables and small fixis (CM-1218)
+4189	feat: improve enricher rate-limit handling for higher throughput [CM-1220]
+4188	fix: prefer company over uni on overlap during affiliation (CM-1216)
+4187	fix: enricher worker
+4186	feat: extend enricher to cover extra fields [CM-1220]
+4185	feat: add packages router and mock (CM-1218)
+4184	chore: consolidate npm package state
+4182	chore: deprecated packages_universe and moved the columns to packages (CM-1225)
+4181	fix: refresh affiliations after email-domain stint changes (CM-1216)
+4180	feat: add Tinybird datasources for packages-db tables (CM-1219)
+4179	feat: pom fetcher (CM-1210)
+4178	chore: add created_at/updated_at to packages-db schemas for Tinybird sync
+4176	fix: gnore weird transient packages
+4175	chore: osv-worker deployment
+4174	chore: upgrade temporal sdk to 1.17.2 and align `@types/node`
+4173	fix: prevent duplicate merge suggestion workflow runs (CM-1217)
+4171	chore: deployment config
+4170	fix: soft delete member segment affiliations for blocked orgs
+4169	Feat/track packages
+4168	Feat/track packages
+4166	feat: add bucket-based processing to PR analysis snapshot IN-1180
+4165	feat: github enricher v2 [CM-1211]
+4163	feat: dockerhub-sync worker for repo_docker pull counts (CM-1213)
+4162	Feat/track packages
+4161	feat: criticality worker init [CM-1214]
+4160	fix: remove display name equality merge signal (CM-1137)
+4159	feat: tracking NPM packages
+4158	feat: deps.dev package import
+4157	feat: add `audit_field_changes` table
+4155	docs: oss packages criticality (CM-1207)
+4153	docs: update adr with latest decisions

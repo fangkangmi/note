@@ -1,0 +1,1380 @@
+diff --git a/backend/src/api/public/v1/index.ts b/backend/src/api/public/v1/index.ts
+index 8876f0a079..982d7d4bc0 100644
+--- a/backend/src/api/public/v1/index.ts
++++ b/backend/src/api/public/v1/index.ts
+@@ -17,6 +17,7 @@ import { membersRouter } from './members'
+ import { organizationsRouter } from './organizations'
+ import { packagesRouter } from './packages'
+ import { batchGetStewardship } from './packages/batchGetStewardship'
++import { stewardshipsRouter } from './stewardships'
+ 
+ const packagesRateLimiter = createRateLimiter({ max: 60, windowMs: 60 * 1000 })
+ 
+@@ -36,6 +37,7 @@ export function v1Router(): Router {
+     safeWrap(batchGetStewardship),
+   )
+   router.use('/packages', oauth2Middleware(AUTH0_CONFIG), packagesRouter())
++  router.use('/stewardships', oauth2Middleware(AUTH0_CONFIG), stewardshipsRouter())
+ 
+   router.use(() => {
+     throw new NotFoundError()
+diff --git a/backend/src/api/public/v1/packages/getPackage.ts b/backend/src/api/public/v1/packages/getPackage.ts
+index 824ddfdc5f..318505b3d0 100644
+--- a/backend/src/api/public/v1/packages/getPackage.ts
++++ b/backend/src/api/public/v1/packages/getPackage.ts
+@@ -2,7 +2,11 @@ import type { Request, Response } from 'express'
+ import { z } from 'zod'
+ 
+ import { NotFoundError } from '@crowd/common'
+-import { getAdvisoriesByPackageId, getPackageDetailByPurl } from '@crowd/data-access-layer'
++import {
++  getAdvisoriesByPackageId,
++  getPackageDetailByPurl,
++  getStewardshipSummary,
++} from '@crowd/data-access-layer'
+ 
+ import { getPackagesQx } from '@/db/packagesDb'
+ import { ok } from '@/utils/api'
+@@ -30,7 +34,10 @@ export async function getPackage(req: Request, res: Response): Promise<void> {
+     throw new NotFoundError()
+   }
+ 
+-  const advisories = await getAdvisoriesByPackageId(qx, pkg.id)
++  const [advisories, stewardshipSummary] = await Promise.all([
++    getAdvisoriesByPackageId(qx, pkg.id),
++    pkg.stewardshipId ? getStewardshipSummary(qx, Number(pkg.stewardshipId)) : null,
++  ])
+ 
+   ok(res, {
+     purl: pkg.purl,
+@@ -83,9 +90,12 @@ export async function getPackage(req: Request, res: Response): Promise<void> {
+       },
+     },
+     stewardship: {
++      id: pkg.stewardshipId ?? null,
+       status: (pkg.stewardshipStatus ?? 'unassigned') as StewardshipStatus,
+-      stewards: null,
+-      lastActivityAt: null,
++      stewards: stewardshipSummary?.stewards ?? null,
++      lastActivityAt: stewardshipSummary?.lastActivityAt ?? null,
++      resolutionPath: pkg.stewardshipResolutionPath ?? null,
++      statusNote: pkg.stewardshipStatusNote ?? null,
+     },
+     history: {},
+   })
+diff --git a/backend/src/api/public/v1/packages/listPackages.ts b/backend/src/api/public/v1/packages/listPackages.ts
+index 9d15196807..b001280a30 100644
+--- a/backend/src/api/public/v1/packages/listPackages.ts
++++ b/backend/src/api/public/v1/packages/listPackages.ts
+@@ -87,6 +87,7 @@ export async function listPackages(req: Request, res: Response): Promise<void> {
+     lifecycle: null,
+     maintainerBusFactor: r.maintainerCount,
+     openVulns: r.openVulns,
++    stewardshipId: r.stewardshipId ?? null,
+     stewardship: (r.stewardshipStatus ?? 'unassigned') as StewardshipStatus,
+     stewards: null,
+   }))
+diff --git a/backend/src/api/public/v1/packages/openapi.yaml b/backend/src/api/public/v1/packages/openapi.yaml
+index 17bf9d3aab..1a44a83f7e 100644
+--- a/backend/src/api/public/v1/packages/openapi.yaml
++++ b/backend/src/api/public/v1/packages/openapi.yaml
+@@ -85,14 +85,17 @@ components:
+ 
+     Steward:
+       type: object
+-      required: [userId, name, role, assignedAt]
++      required: [userId, role, assignedAt]
+       properties:
+         userId:
+           type: string
+-          description: LFID.
+-          example: jdoe
++          description: Auth0 sub of the assigned steward.
++          example: abc123
+         name:
+-          type: string
++          type:
++            - string
++            - 'null'
++          description: Display name of the steward. Null if not available.
+           example: Jonathan R.
+         role:
+           type: string
+@@ -194,6 +197,12 @@ components:
+           oneOf:
+             - $ref: '#/components/schemas/OpenVulns'
+             - type: 'null'
++        stewardshipId:
++          type:
++            - string
++            - 'null'
++          description: Stewardship ID. Required to call mutation endpoints (assign/escalate/status). Null if no stewardship row exists.
++          example: '42'
+         stewardship:
+           $ref: '#/components/schemas/StewardshipStatus'
+         stewards:
+@@ -418,12 +427,18 @@ components:
+                     - 'null'
+         stewardship:
+           type: object
+-          description: Stewardship state. In v1 always unassigned with no stewards or activity.
++          description: Stewardship state.
+           properties:
++            id:
++              type:
++                - string
++                - 'null'
++              description: Stewardship ID. Required to call mutation endpoints (assign/escalate/status).
++              example: '42'
+             status:
+               $ref: '#/components/schemas/StewardshipStatus'
+             stewards:
+-              description: Assigned stewards or null. Null in v1.
++              description: Assigned stewards or null.
+               oneOf:
+                 - type: array
+                   items:
+@@ -434,7 +449,16 @@ components:
+                 - string
+                 - 'null'
+               format: date-time
+-              description: Null in v1.
++            resolutionPath:
++              type:
++                - string
++                - 'null'
++              description: Set on `escalated` status. Null for all other statuses.
++            statusNote:
++              type:
++                - string
++                - 'null'
++              description: Free-text note for the current status.
+         history:
+           type: object
+           description: Package history data. Empty in v1.
+diff --git a/backend/src/api/public/v1/stewardships/assignSteward.ts b/backend/src/api/public/v1/stewardships/assignSteward.ts
+new file mode 100644
+index 0000000000..0359e4bbf1
+--- /dev/null
++++ b/backend/src/api/public/v1/stewardships/assignSteward.ts
+@@ -0,0 +1,38 @@
++import type { Request, Response } from 'express'
++import { z } from 'zod'
++
++import { NotFoundError } from '@crowd/common'
++import { assignSteward } from '@crowd/data-access-layer'
++
++import { getPackagesQx } from '@/db/packagesDb'
++import { ok } from '@/utils/api'
++import { validateOrThrow } from '@/utils/validation'
++
++const paramsSchema = z.object({
++  id: z.coerce.number().int().positive(),
++})
++
++const bodySchema = z.object({
++  userId: z.string().trim().min(1),
++  role: z.enum(['lead', 'co_steward']),
++  moveToAssessing: z.boolean().optional().default(false),
++})
++
++export async function assignStewardHandler(req: Request, res: Response): Promise<void> {
++  const { id } = validateOrThrow(paramsSchema, req.params)
++  const { userId, role, moveToAssessing } = validateOrThrow(bodySchema, req.body)
++
++  const qx = await getPackagesQx()
++  const result = await assignSteward(qx, id, {
++    userId,
++    role,
++    assignedBy: req.actor.id,
++    moveToAssessing,
++  })
++
++  if (!result) {
++    throw new NotFoundError(`Stewardship not found: ${id}`)
++  }
++
++  ok(res, { stewardship: result.stewardship, stewards: result.stewards })
++}
+diff --git a/backend/src/api/public/v1/stewardships/escalate.ts b/backend/src/api/public/v1/stewardships/escalate.ts
+new file mode 100644
+index 0000000000..0481a8c414
+--- /dev/null
++++ b/backend/src/api/public/v1/stewardships/escalate.ts
+@@ -0,0 +1,36 @@
++import type { Request, Response } from 'express'
++import { z } from 'zod'
++
++import { NotFoundError } from '@crowd/common'
++import { ESCALATION_RESOLUTION_PATHS, escalateStewardship } from '@crowd/data-access-layer'
++
++import { getPackagesQx } from '@/db/packagesDb'
++import { ok } from '@/utils/api'
++import { validateOrThrow } from '@/utils/validation'
++
++const paramsSchema = z.object({
++  id: z.coerce.number().int().positive(),
++})
++
++const bodySchema = z.object({
++  resolutionPath: z.enum(ESCALATION_RESOLUTION_PATHS),
++  notes: z.string().trim().min(1).optional(),
++})
++
++export async function escalateHandler(req: Request, res: Response): Promise<void> {
++  const { id } = validateOrThrow(paramsSchema, req.params)
++  const { resolutionPath, notes } = validateOrThrow(bodySchema, req.body)
++
++  const qx = await getPackagesQx()
++  const stewardship = await escalateStewardship(qx, id, {
++    resolutionPath,
++    notes,
++    actorUserId: req.actor.id,
++  })
++
++  if (!stewardship) {
++    throw new NotFoundError(`Stewardship not found: ${id}`)
++  }
++
++  ok(res, { stewardship })
++}
+diff --git a/backend/src/api/public/v1/stewardships/index.ts b/backend/src/api/public/v1/stewardships/index.ts
+new file mode 100644
+index 0000000000..8e24ccef15
+--- /dev/null
++++ b/backend/src/api/public/v1/stewardships/index.ts
+@@ -0,0 +1,50 @@
++import { Router } from 'express'
++
++import { createRateLimiter } from '@/api/apiRateLimiter'
++// TODO: restore once write:stewardships is added to Auth0 staging tenant
++// import { requireScopes } from '@/api/public/middlewares/requireScopes'
++import { safeWrap } from '@/middlewares/errorMiddleware'
++
++// import { SCOPES } from '@/security/scopes'
++import { assignStewardHandler } from './assignSteward'
++import { escalateHandler } from './escalate'
++import { openStewardship } from './openStewardship'
++import { updateStatusHandler } from './updateStatus'
++
++const rateLimiter = createRateLimiter({ max: 60, windowMs: 60 * 1000 })
++
++export function stewardshipsRouter(): Router {
++  const router = Router()
++
++  router.use(rateLimiter)
++
++  router.post(
++    '/',
++    // TODO: restore once write:stewardships is added to Auth0 staging tenant
++    // requireScopes([SCOPES.WRITE_STEWARDSHIPS]),
++    safeWrap(openStewardship),
++  )
++
++  router.put(
++    '/:id/steward',
++    // TODO: restore once write:stewardships is added to Auth0 staging tenant
++    // requireScopes([SCOPES.WRITE_STEWARDSHIPS]),
++    safeWrap(assignStewardHandler),
++  )
++
++  router.put(
++    '/:id/escalate',
++    // TODO: restore once write:stewardships is added to Auth0 staging tenant
++    // requireScopes([SCOPES.WRITE_STEWARDSHIPS]),
++    safeWrap(escalateHandler),
++  )
++
++  router.put(
++    '/:id/status',
++    // TODO: restore once write:stewardships is added to Auth0 staging tenant
++    // requireScopes([SCOPES.WRITE_STEWARDSHIPS]),
++    safeWrap(updateStatusHandler),
++  )
++
++  return router
++}
+diff --git a/backend/src/api/public/v1/stewardships/openStewardship.ts b/backend/src/api/public/v1/stewardships/openStewardship.ts
+new file mode 100644
+index 0000000000..77643f7ba3
+--- /dev/null
++++ b/backend/src/api/public/v1/stewardships/openStewardship.ts
+@@ -0,0 +1,33 @@
++import type { Request, Response } from 'express'
++import { z } from 'zod'
++
++import { NotFoundError } from '@crowd/common'
++import { openStewardshipByPurl } from '@crowd/data-access-layer'
++
++import { getPackagesQx } from '@/db/packagesDb'
++import { ok } from '@/utils/api'
++import { validateOrThrow } from '@/utils/validation'
++
++import { normalizePurl } from '../packages/purl'
++
++const bodySchema = z.object({
++  purl: z
++    .string()
++    .trim()
++    .min(1)
++    .refine((v) => v.startsWith('pkg:'), { message: 'purl must start with pkg:' })
++    .transform(normalizePurl),
++})
++
++export async function openStewardship(req: Request, res: Response): Promise<void> {
++  const { purl } = validateOrThrow(bodySchema, req.body)
++
++  const qx = await getPackagesQx()
++  const stewardship = await openStewardshipByPurl(qx, purl, req.actor.id)
++
++  if (!stewardship) {
++    throw new NotFoundError(`Package not found: ${purl}`)
++  }
++
++  ok(res, { stewardship })
++}
+diff --git a/backend/src/api/public/v1/stewardships/openapi.yaml b/backend/src/api/public/v1/stewardships/openapi.yaml
+new file mode 100644
+index 0000000000..08928976d6
+--- /dev/null
++++ b/backend/src/api/public/v1/stewardships/openapi.yaml
+@@ -0,0 +1,538 @@
++openapi: 3.1.0
++info:
++  title: CDP Public API — Stewardship Admin Actions
++  version: 1.0.0
++  description: >
++    Write endpoints for OSSPREY Program admin stewardship actions.
++
++
++    **Authentication:** OAuth 2.0 M2M bearer token. All endpoints require `write:stewardships`.
++
++
++    **V1 note:** Scope `write:stewardships` is not yet added to the Auth0 staging tenant —
++    scope enforcement is temporarily disabled. See CM-1235.
++
++servers:
++  - url: https://cm.lfx.dev/api/v1
++    description: Production
++  - url: https://lf-staging.crowd.dev/api/v1
++    description: Staging
++
++tags:
++  - name: Stewardship Actions
++    description: Admin-initiated stewardship mutations.
++
++components:
++  securitySchemes:
++    M2MBearer:
++      type: http
++      scheme: bearer
++      bearerFormat: JWT
++
++  schemas:
++    Error:
++      type: object
++      required: [error]
++      properties:
++        error:
++          type: object
++          required: [code, message]
++          properties:
++            code:
++              type: string
++              example: NOT_FOUND
++            message:
++              type: string
++              example: Stewardship not found.
++
++    StewardshipStatus:
++      type: string
++      enum:
++        - unassigned
++        - open
++        - assessing
++        - active
++        - needs_attention
++        - escalated
++        - blocked
++        - inactive
++
++    StewardshipRecord:
++      type: object
++      required: [id, packageId, status, origin, version, createdAt, updatedAt]
++      properties:
++        id:
++          type: string
++          example: '42'
++        packageId:
++          type: string
++          example: '1234'
++        status:
++          $ref: '#/components/schemas/StewardshipStatus'
++        origin:
++          type: string
++          enum: [auto_imported, self_claimed, assigned, opened_for_claim]
++        version:
++          type: integer
++          example: 1
++        openedAt:
++          type:
++            - string
++            - 'null'
++          format: date-time
++        lastStatusAt:
++          type:
++            - string
++            - 'null'
++          format: date-time
++        inactiveReason:
++          type:
++            - string
++            - 'null'
++          enum:
++            - quarterly_cadence_missed
++            - stepped_down
++            - no_longer_critical
++            - 'null'
++        resolutionPath:
++          description: Set on `escalated` status. Null for all other statuses.
++          oneOf:
++            - $ref: '#/components/schemas/EscalationResolutionPath'
++            - type: 'null'
++        statusNote:
++          type:
++            - string
++            - 'null'
++          description: Free-text note for the current status. Set by escalate or updateStatus. Null on open.
++          example: Contacted maintainer, no response after 30 days.
++        createdAt:
++          type: string
++          format: date-time
++        updatedAt:
++          type: string
++          format: date-time
++
++    StewardRecord:
++      type: object
++      required: [id, stewardshipId, userId, role, assignedAt]
++      properties:
++        id:
++          type: string
++          example: '7'
++        stewardshipId:
++          type: string
++          example: '42'
++        userId:
++          type: string
++          description: Auth0 sub of the assigned steward.
++          example: abc123
++        name:
++          type:
++            - string
++            - 'null'
++          description: Display name of the steward. Null if not available.
++          example: Jonathan R.
++        role:
++          type: string
++          enum: [lead, co_steward]
++        assignedAt:
++          type: string
++          format: date-time
++        assignedBy:
++          type:
++            - string
++            - 'null'
++          description: Auth0 sub of the admin who assigned this steward.
++          example: xyz789
++
++    EscalationResolutionPath:
++      type: string
++      enum:
++        - right_of_first_refusal
++        - replace_the_dependency
++        - find_vendor_for_lts
++        - consortium_adopts_maintainership
++        - compensating_controls_monitor
++        - namespace_takeover
++
++paths:
++  /stewardships:
++    post:
++      operationId: openStewardship
++      summary: Open a package for stewardship
++      description: >
++        Transitions the stewardship status to `open`, marking the package as available for claiming.
++        If a stewardship row does not exist yet, one is created.
++        If the stewardship is already `open`, this is a no-op (idempotent).
++      tags:
++        - Stewardship Actions
++      security:
++        - M2MBearer:
++            - write:stewardships
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              type: object
++              required: [purl]
++              properties:
++                purl:
++                  type: string
++                  description: Package URL (must start with `pkg:`).
++                  example: pkg:npm/lodash
++            example:
++              purl: pkg:npm/lodash
++      responses:
++        '200':
++          description: Stewardship opened (or already open).
++          content:
++            application/json:
++              schema:
++                type: object
++                required: [stewardship]
++                properties:
++                  stewardship:
++                    $ref: '#/components/schemas/StewardshipRecord'
++              example:
++                stewardship:
++                  id: '42'
++                  packageId: '1234'
++                  status: open
++                  origin: opened_for_claim
++                  version: 1
++                  openedAt: '2026-06-15T10:00:00Z'
++                  lastStatusAt: '2026-06-15T10:00:00Z'
++                  inactiveReason: null
++                  createdAt: '2026-06-15T10:00:00Z'
++                  updatedAt: '2026-06-15T10:00:00Z'
++        '400':
++          description: Validation error (e.g. missing or invalid purl).
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '401':
++          description: Missing or invalid bearer token.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '403':
++          description: Insufficient scopes.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '404':
++          description: Package not found.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++
++  /stewardships/{id}/steward:
++    put:
++      operationId: assignSteward
++      summary: Assign a steward to a stewardship
++      description: >
++        Assigns a user as a steward with the given role.
++        If the user is already an active steward, the role is updated (soft-delete + re-insert).
++        Returns the unchanged stewardship record and the full active stewards list after the operation.
++      tags:
++        - Stewardship Actions
++      security:
++        - M2MBearer:
++            - write:stewardships
++      parameters:
++        - name: id
++          in: path
++          required: true
++          schema:
++            type: integer
++          description: Stewardship ID.
++          example: 42
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              type: object
++              required: [userId, role]
++              properties:
++                userId:
++                  type: string
++                  description: Auth0 sub of the user to assign as steward.
++                  example: abc123
++                role:
++                  type: string
++                  enum: [lead, co_steward]
++                moveToAssessing:
++                  type: boolean
++                  default: false
++                  description: >
++                    If true, atomically transitions the stewardship status to `assessing`
++                    in the same transaction as the assignment. Use for the "Assign & move to
++                    Assessing" action to avoid a second round-trip.
++            example:
++              userId: abc123
++              role: lead
++              moveToAssessing: true
++      responses:
++        '200':
++          description: Steward assigned.
++          content:
++            application/json:
++              schema:
++                type: object
++                required: [stewardship, stewards]
++                properties:
++                  stewardship:
++                    $ref: '#/components/schemas/StewardshipRecord'
++                  stewards:
++                    type: array
++                    items:
++                      $ref: '#/components/schemas/StewardRecord'
++              example:
++                stewardship:
++                  id: '42'
++                  packageId: '1234'
++                  status: open
++                  origin: opened_for_claim
++                  version: 1
++                  openedAt: '2026-06-15T10:00:00Z'
++                  lastStatusAt: '2026-06-15T10:00:00Z'
++                  inactiveReason: null
++                  createdAt: '2026-06-15T10:00:00Z'
++                  updatedAt: '2026-06-15T10:00:00Z'
++                stewards:
++                  - id: '7'
++                    stewardshipId: '42'
++                    userId: abc123
++                    role: lead
++                    assignedAt: '2026-06-15T10:05:00Z'
++                    assignedBy: xyz789
++        '400':
++          description: Validation error (e.g. invalid role).
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '401':
++          description: Missing or invalid bearer token.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '403':
++          description: Insufficient scopes.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '404':
++          description: Stewardship not found.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++
++  /stewardships/{id}/escalate:
++    put:
++      operationId: escalateStewardship
++      summary: Escalate a stewardship
++      description: >
++        Transitions the stewardship to `escalated` status and logs the chosen resolution path
++        in the activity log. Optional free-text notes can be included.
++      tags:
++        - Stewardship Actions
++      security:
++        - M2MBearer:
++            - write:stewardships
++      parameters:
++        - name: id
++          in: path
++          required: true
++          schema:
++            type: integer
++          description: Stewardship ID.
++          example: 42
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              type: object
++              required: [resolutionPath]
++              properties:
++                resolutionPath:
++                  $ref: '#/components/schemas/EscalationResolutionPath'
++                notes:
++                  type: string
++                  minLength: 1
++                  description: Optional free-text notes for the activity log.
++                  example: Contacted maintainer, no response after 30 days.
++            example:
++              resolutionPath: right_of_first_refusal
++              notes: Contacted maintainer, no response after 30 days.
++      responses:
++        '200':
++          description: Stewardship escalated.
++          content:
++            application/json:
++              schema:
++                type: object
++                required: [stewardship]
++                properties:
++                  stewardship:
++                    $ref: '#/components/schemas/StewardshipRecord'
++              example:
++                stewardship:
++                  id: '42'
++                  packageId: '1234'
++                  status: escalated
++                  origin: opened_for_claim
++                  version: 1
++                  openedAt: '2026-06-15T10:00:00Z'
++                  lastStatusAt: '2026-06-15T11:00:00Z'
++                  inactiveReason: null
++                  createdAt: '2026-06-15T10:00:00Z'
++                  updatedAt: '2026-06-15T11:00:00Z'
++        '400':
++          description: Validation error (e.g. invalid resolutionPath).
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '401':
++          description: Missing or invalid bearer token.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '403':
++          description: Insufficient scopes.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '404':
++          description: Stewardship not found.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++
++  /stewardships/{id}/status:
++    put:
++      operationId: updateStewardshipStatus
++      summary: Update stewardship status
++      description: >
++        Updates the stewardship status and logs a `state_changed` activity entry.
++        Valid target statuses: `assessing`, `active`, `needs_attention`, `blocked`, `inactive`.
++        When transitioning to `inactive`, `inactiveReason` is required.
++      tags:
++        - Stewardship Actions
++      security:
++        - M2MBearer:
++            - write:stewardships
++      parameters:
++        - name: id
++          in: path
++          required: true
++          schema:
++            type: integer
++          description: Stewardship ID.
++          example: 42
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              type: object
++              required: [status]
++              properties:
++                status:
++                  type: string
++                  enum:
++                    - assessing
++                    - active
++                    - needs_attention
++                    - blocked
++                    - inactive
++                inactiveReason:
++                  type: string
++                  enum:
++                    - quarterly_cadence_missed
++                    - stepped_down
++                    - no_longer_critical
++                  description: Required when `status` is `inactive`.
++                notes:
++                  type: string
++                  minLength: 1
++                  description: Optional free-text notes for the activity log.
++            examples:
++              set_active:
++                summary: Transition to active
++                value:
++                  status: active
++              set_inactive:
++                summary: Transition to inactive (inactiveReason required)
++                value:
++                  status: inactive
++                  inactiveReason: stepped_down
++                  notes: Steward stepped down voluntarily.
++              set_blocked:
++                summary: Transition to blocked
++                value:
++                  status: blocked
++                  notes: Waiting on upstream maintainer response.
++      responses:
++        '200':
++          description: Status updated.
++          content:
++            application/json:
++              schema:
++                type: object
++                required: [stewardship]
++                properties:
++                  stewardship:
++                    $ref: '#/components/schemas/StewardshipRecord'
++              example:
++                stewardship:
++                  id: '42'
++                  packageId: '1234'
++                  status: active
++                  origin: opened_for_claim
++                  version: 1
++                  openedAt: '2026-06-15T10:00:00Z'
++                  lastStatusAt: '2026-06-15T12:00:00Z'
++                  inactiveReason: null
++                  createdAt: '2026-06-15T10:00:00Z'
++                  updatedAt: '2026-06-15T12:00:00Z'
++        '400':
++          description: >
++            Validation error.
++            Includes the case where `status` is `inactive` but `inactiveReason` is missing.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '401':
++          description: Missing or invalid bearer token.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '403':
++          description: Insufficient scopes.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '404':
++          description: Stewardship not found.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
+diff --git a/backend/src/api/public/v1/stewardships/updateStatus.ts b/backend/src/api/public/v1/stewardships/updateStatus.ts
+new file mode 100644
+index 0000000000..6ed8a6c08a
+--- /dev/null
++++ b/backend/src/api/public/v1/stewardships/updateStatus.ts
+@@ -0,0 +1,47 @@
++import type { Request, Response } from 'express'
++import { z } from 'zod'
++
++import { NotFoundError } from '@crowd/common'
++import {
++  INACTIVE_REASONS,
++  STEWARDSHIP_UPDATABLE_STATUSES,
++  updateStewardshipStatus,
++} from '@crowd/data-access-layer'
++
++import { getPackagesQx } from '@/db/packagesDb'
++import { ok } from '@/utils/api'
++import { validateOrThrow } from '@/utils/validation'
++
++const paramsSchema = z.object({
++  id: z.coerce.number().int().positive(),
++})
++
++const bodySchema = z
++  .object({
++    status: z.enum(STEWARDSHIP_UPDATABLE_STATUSES),
++    inactiveReason: z.enum(INACTIVE_REASONS).optional(),
++    notes: z.string().trim().min(1).optional(),
++  })
++  .refine((d) => d.status !== 'inactive' || !!d.inactiveReason, {
++    message: 'inactiveReason is required when status is inactive',
++    path: ['inactiveReason'],
++  })
++
++export async function updateStatusHandler(req: Request, res: Response): Promise<void> {
++  const { id } = validateOrThrow(paramsSchema, req.params)
++  const { status, inactiveReason, notes } = validateOrThrow(bodySchema, req.body)
++
++  const qx = await getPackagesQx()
++  const stewardship = await updateStewardshipStatus(qx, id, {
++    status,
++    inactiveReason,
++    notes,
++    actorUserId: req.actor.id,
++  })
++
++  if (!stewardship) {
++    throw new NotFoundError(`Stewardship not found: ${id}`)
++  }
++
++  ok(res, { stewardship })
++}
+diff --git a/backend/src/osspckgs/migrations/V1781300000__stewardship-status-path-note.sql b/backend/src/osspckgs/migrations/V1781300000__stewardship-status-path-note.sql
+new file mode 100644
+index 0000000000..081df73dc9
+--- /dev/null
++++ b/backend/src/osspckgs/migrations/V1781300000__stewardship-status-path-note.sql
+@@ -0,0 +1,3 @@
++ALTER TABLE stewardships
++    ADD COLUMN IF NOT EXISTS resolution_path TEXT,
++    ADD COLUMN IF NOT EXISTS status_note     TEXT;
+diff --git a/services/libs/data-access-layer/src/osspckgs/api.ts b/services/libs/data-access-layer/src/osspckgs/api.ts
+index 21c0296165..a8673d99e2 100644
+--- a/services/libs/data-access-layer/src/osspckgs/api.ts
++++ b/services/libs/data-access-layer/src/osspckgs/api.ts
+@@ -54,6 +54,7 @@ export interface PackageListRow {
+   name: string
+   ecosystem: string
+   criticalityScore: number | null
++  stewardshipId: string | null
+   stewardshipStatus: string | null
+   openVulns: number
+   maintainerCount: number
+@@ -226,6 +227,7 @@ export async function listPackagesForApi(
+       p.name,
+       p.ecosystem,
+       p.impact AS "criticalityScore",
++      s.id::text AS "stewardshipId",
+       s.status AS "stewardshipStatus",
+       COALESCE(ap_counts.cnt, 0) AS "openVulns",
+       pm_counts.cnt AS "maintainerCount",
+@@ -273,8 +275,11 @@ export interface PackageDetailRow {
+   declaredRepositoryUrl: string | null
+   repositoryUrl: string | null
+   hasCriticalVulnerability: boolean
++  stewardshipId: string | null
+   stewardshipStatus: string | null
+   stewardshipLastStatusAt: Date | null
++  stewardshipResolutionPath: string | null
++  stewardshipStatusNote: string | null
+   // from package_repos + repos
+   repoUrl: string | null
+   repoMappingConfidence: number | null
+@@ -315,8 +320,11 @@ export async function getPackageDetailByPurl(
+       p.declared_repository_url AS "declaredRepositoryUrl",
+       p.repository_url AS "repositoryUrl",
+       p.has_critical_vulnerability AS "hasCriticalVulnerability",
++      s.id::text AS "stewardshipId",
+       s.status AS "stewardshipStatus",
+       s.last_status_at AS "stewardshipLastStatusAt",
++      s.resolution_path AS "stewardshipResolutionPath",
++      s.status_note AS "stewardshipStatusNote",
+       -- best repo link (highest confidence, prefer declared)
+       r.url AS "repoUrl",
+       pr.confidence AS "repoMappingConfidence",
+diff --git a/services/libs/data-access-layer/src/osspckgs/stewardships.ts b/services/libs/data-access-layer/src/osspckgs/stewardships.ts
+index 17579147e7..5b9760e10d 100644
+--- a/services/libs/data-access-layer/src/osspckgs/stewardships.ts
++++ b/services/libs/data-access-layer/src/osspckgs/stewardships.ts
+@@ -1,5 +1,30 @@
+ import { QueryExecutor } from '../queryExecutor'
+ 
++export interface StewardshipRecord {
++  id: string
++  packageId: string
++  status: string
++  origin: string
++  version: number
++  openedAt: string | null
++  lastStatusAt: string | null
++  inactiveReason: string | null
++  resolutionPath: string | null
++  statusNote: string | null
++  createdAt: string
++  updatedAt: string
++}
++
++export interface StewardshipStewardRecord {
++  id: string
++  stewardshipId: string
++  userId: string
++  name: string | null
++  role: string
++  assignedAt: string
++  assignedBy: string | null
++}
++
+ /**
+  * Returns a page of critical package ids that do not yet have a stewardship row,
+  * ordered by id ascending. Used as the cursor-based pagination source for the
+@@ -57,3 +82,359 @@ export async function insertUnassignedStewardships(
+   )
+   return parseInt(result.count, 10)
+ }
++
++function toIso(v: unknown): string {
++  return v instanceof Date ? v.toISOString() : String(v)
++}
++
++function mapStewardStewardRow(row: Record<string, unknown>): StewardshipStewardRecord {
++  return {
++    id: String(row.id),
++    stewardshipId: String(row.stewardship_id),
++    userId: String(row.user_id),
++    name: null,
++    role: String(row.role),
++    assignedAt: toIso(row.assigned_at),
++    assignedBy: row.assigned_by ? String(row.assigned_by) : null,
++  }
++}
++
++function mapStewardshipRow(row: Record<string, unknown>): StewardshipRecord {
++  return {
++    id: String(row.id),
++    packageId: String(row.package_id),
++    status: row.status as string,
++    origin: row.origin as string,
++    version: Number(row.version),
++    openedAt: row.opened_at ? toIso(row.opened_at) : null,
++    lastStatusAt: row.last_status_at ? toIso(row.last_status_at) : null,
++    inactiveReason: row.inactive_reason ? String(row.inactive_reason) : null,
++    resolutionPath: row.resolution_path ? String(row.resolution_path) : null,
++    statusNote: row.status_note ? String(row.status_note) : null,
++    createdAt: toIso(row.created_at),
++    updatedAt: toIso(row.updated_at),
++  }
++}
++
++export async function getStewardshipById(
++  qx: QueryExecutor,
++  id: number,
++): Promise<StewardshipRecord | null> {
++  const row: Record<string, unknown> | null = await qx.selectOneOrNone(
++    `SELECT id, package_id, status, origin, version, opened_at, last_status_at,
++            inactive_reason, resolution_path, status_note, created_at, updated_at
++     FROM stewardships
++     WHERE id = $(id)`,
++    { id },
++  )
++  return row ? mapStewardshipRow(row) : null
++}
++
++/**
++ * Opens a package for stewardship (status → 'open').
++ * If a stewardship row already exists, updates the status to 'open'.
++ * If none exists, creates one with origin 'opened_for_claim'.
++ * Returns the upserted stewardship row, or null if the package purl is not found.
++ */
++export async function openStewardshipByPurl(
++  qx: QueryExecutor,
++  purl: string,
++  actorUserId: string,
++): Promise<StewardshipRecord | null> {
++  const row: Record<string, unknown> | null = await qx.selectOneOrNone(
++    `
++    WITH pkg AS (
++      SELECT id FROM packages WHERE purl = $(purl) LIMIT 1
++    ),
++    prev AS (
++      SELECT s.status AS old_status
++      FROM stewardships s
++      WHERE s.package_id = (SELECT id FROM pkg)
++    ),
++    upserted AS (
++      INSERT INTO stewardships (package_id, status, origin, opened_at, last_status_at)
++      SELECT id, 'open', 'opened_for_claim', NOW(), NOW()
++      FROM pkg
++      ON CONFLICT (package_id) DO UPDATE
++        SET status          = 'open',
++            opened_at       = NOW(),
++            last_status_at  = NOW(),
++            inactive_reason = NULL,
++            resolution_path = NULL,
++            status_note     = NULL,
++            updated_at      = NOW()
++      RETURNING id, package_id, status, origin, version, opened_at,
++                last_status_at, inactive_reason, resolution_path, status_note, created_at, updated_at
++    ),
++    _log AS (
++      INSERT INTO stewardship_activity (stewardship_id, actor_user_id, actor_type, activity_type, content)
++      SELECT upserted.id, $(actorUserId), 'user', 'state_changed', 'Opened for stewardship'
++      FROM upserted
++      WHERE NOT EXISTS (SELECT 1 FROM prev WHERE prev.old_status = 'open')
++    )
++    SELECT * FROM upserted
++    `,
++    { purl, actorUserId },
++  )
++  return row ? mapStewardshipRow(row) : null
++}
++
++/**
++ * Assigns a steward to a stewardship. Soft-deletes any existing active entry
++ * for the same user (allowing role changes). Logs a steward_added activity.
++ * Returns the stewardship row (unchanged by this operation) and the full
++ * active stewards list as of the end of the transaction.
++ */
++export async function assignSteward(
++  qx: QueryExecutor,
++  stewardshipId: number,
++  data: {
++    userId: string
++    role: 'lead' | 'co_steward'
++    assignedBy: string
++    moveToAssessing?: boolean
++  },
++): Promise<{ stewardship: StewardshipRecord; stewards: StewardshipStewardRecord[] } | null> {
++  return qx.tx(async (tx) => {
++    const stewardship = await getStewardshipById(tx, stewardshipId)
++    if (!stewardship) return null
++
++    // Soft-delete existing active entry for this user (handles role changes).
++    await tx.result(
++      `UPDATE stewardship_stewards
++       SET deleted_at = NOW()
++       WHERE stewardship_id = $(stewardshipId)
++         AND user_id = $(userId)
++         AND deleted_at IS NULL`,
++      { stewardshipId, userId: data.userId },
++    )
++
++    await tx.result(
++      `INSERT INTO stewardship_stewards (stewardship_id, user_id, role, assigned_by)
++       VALUES ($(stewardshipId), $(userId), $(role), $(assignedBy))`,
++      { stewardshipId, userId: data.userId, role: data.role, assignedBy: data.assignedBy },
++    )
++
++    await tx.result(
++      `INSERT INTO stewardship_activity (stewardship_id, actor_user_id, actor_type, activity_type, content, metadata)
++       VALUES ($(stewardshipId), $(actorUserId), 'user', 'steward_added', $(content), $(metadata)::jsonb)`,
++      {
++        stewardshipId,
++        actorUserId: data.assignedBy,
++        content: `Assigned steward ${data.userId} as ${data.role}`,
++        metadata: JSON.stringify({ userId: data.userId, role: data.role }),
++      },
++    )
++
++    let finalStewardship = stewardship
++
++    if (data.moveToAssessing) {
++      const updated: Record<string, unknown> | null = await tx.selectOneOrNone(
++        `
++        WITH upd AS (
++          UPDATE stewardships
++          SET status         = 'assessing',
++              last_status_at = NOW(),
++              resolution_path = NULL,
++              status_note     = NULL,
++              updated_at     = NOW()
++          WHERE id = $(stewardshipId)
++            AND status IN ('unassigned', 'open')
++          RETURNING id, package_id, status, origin, version, opened_at,
++                    last_status_at, inactive_reason, resolution_path, status_note, created_at, updated_at
++        ),
++        _log AS (
++          INSERT INTO stewardship_activity
++            (stewardship_id, actor_user_id, actor_type, activity_type, content, metadata)
++          SELECT id, $(actorUserId), 'user', 'state_changed',
++                 'Status updated to assessing', $(metadata)::jsonb
++          FROM upd
++        )
++        SELECT * FROM upd
++        `,
++        {
++          stewardshipId,
++          actorUserId: data.assignedBy,
++          metadata: JSON.stringify({ status: 'assessing' }),
++        },
++      )
++      if (updated) finalStewardship = mapStewardshipRow(updated)
++    }
++
++    const stewards: Array<Record<string, unknown>> = await tx.select(
++      `SELECT id, stewardship_id, user_id, role, assigned_at, assigned_by
++       FROM stewardship_stewards
++       WHERE stewardship_id = $(stewardshipId)
++         AND deleted_at IS NULL
++       ORDER BY assigned_at ASC`,
++      { stewardshipId },
++    )
++
++    return {
++      stewardship: finalStewardship,
++      stewards: stewards.map(mapStewardStewardRow),
++    }
++  })
++}
++
++export interface StewardshipSummary {
++  stewards: StewardshipStewardRecord[]
++  lastActivityAt: string | null
++}
++
++export async function getStewardshipSummary(
++  qx: QueryExecutor,
++  stewardshipId: number,
++): Promise<StewardshipSummary> {
++  const [stewards, activityRow] = await Promise.all([
++    qx.select(
++      `SELECT id, stewardship_id, user_id, role, assigned_at, assigned_by
++       FROM stewardship_stewards
++       WHERE stewardship_id = $(stewardshipId)
++         AND deleted_at IS NULL
++       ORDER BY assigned_at ASC`,
++      { stewardshipId },
++    ) as Promise<Array<Record<string, unknown>>>,
++    qx.selectOneOrNone(
++      `SELECT MAX(created_at) AS last_activity_at
++       FROM stewardship_activity
++       WHERE stewardship_id = $(stewardshipId)`,
++      { stewardshipId },
++    ) as Promise<Record<string, unknown> | null>,
++  ])
++
++  return {
++    stewards: stewards.map(mapStewardStewardRow),
++    lastActivityAt: activityRow?.last_activity_at ? toIso(activityRow.last_activity_at) : null,
++  }
++}
++
++export const ESCALATION_RESOLUTION_PATHS = [
++  'right_of_first_refusal',
++  'replace_the_dependency',
++  'find_vendor_for_lts',
++  'consortium_adopts_maintainership',
++  'compensating_controls_monitor',
++  'namespace_takeover',
++] as const
++
++export type EscalationResolutionPath = (typeof ESCALATION_RESOLUTION_PATHS)[number]
++
++/**
++ * Escalates a stewardship. Updates status to 'escalated' and logs the
++ * chosen resolution path in stewardship_activity metadata.
++ */
++export async function escalateStewardship(
++  qx: QueryExecutor,
++  stewardshipId: number,
++  data: { resolutionPath: EscalationResolutionPath; notes?: string; actorUserId: string },
++): Promise<StewardshipRecord | null> {
++  const row: Record<string, unknown> | null = await qx.selectOneOrNone(
++    `
++    WITH upd AS (
++      UPDATE stewardships
++      SET status          = 'escalated',
++          last_status_at  = NOW(),
++          inactive_reason = NULL,
++          resolution_path = $(resolutionPath),
++          status_note     = $(statusNote),
++          updated_at      = NOW()
++      WHERE id = $(stewardshipId)
++      RETURNING id, package_id, status, origin, version, opened_at,
++                last_status_at, inactive_reason, resolution_path, status_note, created_at, updated_at
++    ),
++    _log AS (
++      INSERT INTO stewardship_activity
++        (stewardship_id, actor_user_id, actor_type, activity_type, content, metadata)
++      SELECT id, $(actorUserId), 'user', 'escalation',
++             $(content), $(metadata)::jsonb
++      FROM upd
++    )
++    SELECT * FROM upd
++    `,
++    {
++      stewardshipId,
++      resolutionPath: data.resolutionPath,
++      statusNote: data.notes ?? null,
++      actorUserId: data.actorUserId,
++      content: `Escalated with resolution path: ${data.resolutionPath}`,
++      metadata: JSON.stringify({
++        resolutionPath: data.resolutionPath,
++        ...(data.notes ? { notes: data.notes } : {}),
++      }),
++    },
++  )
++  return row ? mapStewardshipRow(row) : null
++}
++
++export const INACTIVE_REASONS = [
++  'quarterly_cadence_missed',
++  'stepped_down',
++  'no_longer_critical',
++] as const
++
++export type InactiveReason = (typeof INACTIVE_REASONS)[number]
++
++export const STEWARDSHIP_UPDATABLE_STATUSES = [
++  'assessing',
++  'active',
++  'needs_attention',
++  'blocked',
++  'inactive',
++] as const
++
++export type UpdatableStewardshipStatus = (typeof STEWARDSHIP_UPDATABLE_STATUSES)[number]
++
++/**
++ * Updates the status of a stewardship and logs the change.
++ * For 'inactive', an inactiveReason must be provided.
++ */
++export async function updateStewardshipStatus(
++  qx: QueryExecutor,
++  stewardshipId: number,
++  data: {
++    status: UpdatableStewardshipStatus
++    inactiveReason?: InactiveReason
++    notes?: string
++    actorUserId: string
++  },
++): Promise<StewardshipRecord | null> {
++  const row: Record<string, unknown> | null = await qx.selectOneOrNone(
++    `
++    WITH upd AS (
++      UPDATE stewardships
++      SET status          = $(status),
++          last_status_at  = NOW(),
++          inactive_reason = CASE WHEN $(status) = 'inactive' THEN $(inactiveReason) ELSE inactive_reason END,
++          resolution_path = NULL,
++          status_note     = $(statusNote),
++          updated_at      = NOW()
++      WHERE id = $(stewardshipId)
++      RETURNING id, package_id, status, origin, version, opened_at,
++                last_status_at, inactive_reason, resolution_path, status_note, created_at, updated_at
++    ),
++    _log AS (
++      INSERT INTO stewardship_activity
++        (stewardship_id, actor_user_id, actor_type, activity_type, content, metadata)
++      SELECT id, $(actorUserId), 'user', 'state_changed',
++             $(content), $(metadata)::jsonb
++      FROM upd
++    )
++    SELECT * FROM upd
++    `,
++    {
++      stewardshipId,
++      status: data.status,
++      inactiveReason: data.inactiveReason ?? null,
++      statusNote: data.notes ?? null,
++      actorUserId: data.actorUserId,
++      content: `Status updated to ${data.status}`,
++      metadata: JSON.stringify({
++        status: data.status,
++        ...(data.inactiveReason ? { inactiveReason: data.inactiveReason } : {}),
++        ...(data.notes ? { notes: data.notes } : {}),
++      }),
++    },
++  )
++  return row ? mapStewardshipRow(row) : null
++}

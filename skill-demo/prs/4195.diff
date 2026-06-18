@@ -1,0 +1,664 @@
+diff --git a/backend/config/custom-environment-variables.json b/backend/config/custom-environment-variables.json
+index 9aba188edf..4d1d01b6f5 100644
+--- a/backend/config/custom-environment-variables.json
++++ b/backend/config/custom-environment-variables.json
+@@ -49,6 +49,13 @@
+     "password": "PRODUCT_DB_PASSWORD",
+     "database": "PRODUCT_DB_DATABASE"
+   },
++  "packagesDb": {
++    "host": "CROWD_PACKAGES_DB_WRITE_HOST",
++    "port": "CROWD_PACKAGES_DB_PORT",
++    "user": "CROWD_PACKAGES_DB_USERNAME",
++    "password": "CROWD_PACKAGES_DB_PASSWORD",
++    "database": "CROWD_PACKAGES_DB_DATABASE"
++  },
+   "segment": {
+     "writeKey": "CROWD_SEGMENT_WRITE_KEY"
+   },
+diff --git a/backend/src/api/public/v1/packages/batchGetStewardship.ts b/backend/src/api/public/v1/packages/batchGetStewardship.ts
+index e888f1b5c8..d5f7490255 100644
+--- a/backend/src/api/public/v1/packages/batchGetStewardship.ts
++++ b/backend/src/api/public/v1/packages/batchGetStewardship.ts
+@@ -1,11 +1,13 @@
+ import type { Request, Response } from 'express'
+ import { z } from 'zod'
+ 
++import { getPackagesByStewardshipPurls } from '@crowd/data-access-layer'
++
++import { getPackagesQx } from '@/db/packagesDb'
+ import { ok } from '@/utils/api'
+ import { validateOrThrow } from '@/utils/validation'
+ 
+-import { MOCK_DETAILS } from './mockData'
+-import type { OpenVulns, StewardshipSummary } from './types'
++import type { StewardshipSummary } from './types'
+ 
+ const MAX_PURLS = 100
+ 
+@@ -16,29 +18,30 @@ const bodySchema = z.object({
+     .max(MAX_PURLS, `Maximum ${MAX_PURLS} purls per request`),
+ })
+ 
+-// TODO: replace with real DB queries once stewardship tables land
+ export async function batchGetStewardship(req: Request, res: Response): Promise<void> {
+   const { purls } = validateOrThrow(bodySchema, req.body)
+ 
++  const qx = await getPackagesQx()
++  const rows = await getPackagesByStewardshipPurls(qx, purls)
++
++  const byPurl = new Map(rows.map((r) => [r.purl, r]))
++
+   const packages: Record<string, StewardshipSummary | null> = {}
+   for (const purl of purls) {
+-    const detail = MOCK_DETAILS[purl]
+-    if (!detail) {
++    const row = byPurl.get(purl)
++    if (!row) {
+       packages[purl] = null
+     } else {
+-      const openVulns: OpenVulns = { low: 0, medium: 0, high: 0, critical: 0 }
+-      for (const advisory of detail.security.advisories) {
+-        openVulns[advisory.severity] += 1
+-      }
+       packages[purl] = {
+-        name: detail.name,
+-        ecosystem: detail.ecosystem,
+-        lifecycle: detail.general.riskSignals.lifecycle,
+-        health: detail.general.healthScore.total,
+-        impact: detail.general.impact.impactScore,
+-        openVulns,
+-        stewardship: detail.stewardship.status,
+-        stewards: detail.stewardship.stewards,
++        name: row.name,
++        ecosystem: row.ecosystem,
++        lifecycle: null,
++        health: null,
++        impact:
++          row.criticalityScore != null ? Math.round(Number(row.criticalityScore) * 100) : null,
++        openVulns: null,
++        stewardship: (row.stewardshipStatus ?? 'unassigned') as StewardshipSummary['stewardship'],
++        stewards: null,
+         lastActivityAt: null,
+         lastActivityDescription: null,
+       }
+diff --git a/backend/src/api/public/v1/packages/getPackage.ts b/backend/src/api/public/v1/packages/getPackage.ts
+index 31ababa00f..4fd851dc9a 100644
+--- a/backend/src/api/public/v1/packages/getPackage.ts
++++ b/backend/src/api/public/v1/packages/getPackage.ts
+@@ -1,29 +1,90 @@
+ import type { Request, Response } from 'express'
+ import { z } from 'zod'
+ 
+-import { BadRequestError, NotFoundError } from '@crowd/common'
++import { NotFoundError } from '@crowd/common'
++import { getAdvisoriesByPackageId, getPackageDetailByPurl } from '@crowd/data-access-layer'
+ 
++import { getPackagesQx } from '@/db/packagesDb'
+ import { ok } from '@/utils/api'
+ import { validateOrThrow } from '@/utils/validation'
+ 
+-import { MOCK_DETAILS } from './mockData'
++import type { StewardshipStatus } from './types'
+ 
+ const querySchema = z.object({
+-  purl: z.string().trim().min(1),
++  purl: z
++    .string()
++    .trim()
++    .min(1)
++    .refine((v) => v.startsWith('pkg:'), { message: 'purl must start with pkg:' }),
+ })
+ 
+-// TODO: replace with real DB queries once packages DB is wired into the backend
+ export async function getPackage(req: Request, res: Response): Promise<void> {
+   const { purl } = validateOrThrow(querySchema, req.query)
+ 
+-  if (!purl.startsWith('pkg:')) {
+-    throw new BadRequestError('Invalid purl format: must start with pkg:')
+-  }
++  const qx = await getPackagesQx()
++  const pkg = await getPackageDetailByPurl(qx, purl)
+ 
+-  const detail = MOCK_DETAILS[purl]
+-  if (!detail) {
++  if (!pkg) {
+     throw new NotFoundError()
+   }
+ 
+-  ok(res, detail)
++  const advisories = await getAdvisoriesByPackageId(qx, pkg.id)
++
++  ok(res, {
++    purl: pkg.purl,
++    name: pkg.name,
++    ecosystem: pkg.ecosystem,
++    general: {
++      healthScore: null,
++      impact: {
++        impactScore:
++          pkg.criticalityScore != null ? Math.round(Number(pkg.criticalityScore) * 100) : null,
++        downloadsLastMonth:
++          pkg.downloadsLast30d != null ? parseInt(pkg.downloadsLast30d, 10) : null,
++        dependentPackages: pkg.dependentPackagesCount ?? null,
++        dependentRepos: pkg.dependentReposCount ?? null,
++        transitiveReach: pkg.transitiveReach,
++      },
++      riskSignals: {
++        lifecycle: null,
++        maintainerBusFactor: pkg.maintainerCount,
++        lastRelease: pkg.latestReleaseAt ? pkg.latestReleaseAt.toISOString() : null,
++        hasSecurityFile: pkg.hasSecurityFile,
++        openSSFScorecard: pkg.scorecardScore != null ? Number(pkg.scorecardScore) : null,
++      },
++    },
++    assessment: {},
++    security: {
++      securityContacts: null,
++      advisories: advisories.map((a) => ({
++        osvId: a.osvId,
++        severity: a.severity,
++        resolution: a.resolution,
++      })),
++      cvd: {
++        isPvrEnabled: null,
++        hasSecurityPolicyEnabled: pkg.branchProtectionEnabled,
++        tier0Steward: null,
++        criticalVulnerabilityFlag: pkg.hasCriticalVulnerability,
++      },
++    },
++    provenance: {
++      repositoryMapping: {
++        declaredRepo: pkg.repoUrl ?? pkg.repositoryUrl ?? pkg.declaredRepositoryUrl ?? null,
++        mappingConfidence:
++          pkg.repoMappingConfidence != null ? Number(pkg.repoMappingConfidence) : null,
++        lastCommitAt: pkg.repoLastCommitAt ? pkg.repoLastCommitAt.toISOString() : null,
++      },
++      supplyChainIntegrity: {
++        buildProvenance: null,
++        signedReleases: null,
++      },
++    },
++    stewardship: {
++      status: (pkg.stewardshipStatus ?? 'unassigned') as StewardshipStatus,
++      stewards: null,
++      lastActivityAt: null,
++    },
++    history: {},
++  })
+ }
+diff --git a/backend/src/api/public/v1/packages/getPackagesMetrics.ts b/backend/src/api/public/v1/packages/getPackagesMetrics.ts
+index 89f12f2a46..df1b3e5595 100644
+--- a/backend/src/api/public/v1/packages/getPackagesMetrics.ts
++++ b/backend/src/api/public/v1/packages/getPackagesMetrics.ts
+@@ -1,10 +1,12 @@
+ import type { Request, Response } from 'express'
+ 
+-import { ok } from '@/utils/api'
++import { getPackageMetrics } from '@crowd/data-access-layer'
+ 
+-import { MOCK_METRICS } from './mockData'
++import { getPackagesQx } from '@/db/packagesDb'
++import { ok } from '@/utils/api'
+ 
+-// TODO: replace with real DB queries once packages DB is wired into the backend
+ export async function getPackagesMetrics(req: Request, res: Response): Promise<void> {
+-  ok(res, MOCK_METRICS)
++  const qx = await getPackagesQx()
++  const metrics = await getPackageMetrics(qx)
++  ok(res, metrics)
+ }
+diff --git a/backend/src/api/public/v1/packages/listPackages.ts b/backend/src/api/public/v1/packages/listPackages.ts
+index 6e912c3581..3e07ca3b40 100644
+--- a/backend/src/api/public/v1/packages/listPackages.ts
++++ b/backend/src/api/public/v1/packages/listPackages.ts
+@@ -1,14 +1,16 @@
+ import type { Request, Response } from 'express'
+ import { z } from 'zod'
+ 
++import { listPackagesForApi } from '@crowd/data-access-layer'
++
++import { getPackagesQx } from '@/db/packagesDb'
+ import { ok } from '@/utils/api'
+ import { validateOrThrow } from '@/utils/validation'
+ 
+-import { MOCK_DETAILS, MOCK_PACKAGES } from './mockData'
++import type { StewardshipStatus } from './types'
+ 
+ const DEFAULT_PAGE_SIZE = 20
+ const MAX_PAGE_SIZE = 100
+-const STALE_MONTHS = 18
+ 
+ const booleanQueryParam = z.preprocess((v) => v === 'true', z.boolean()).default(false)
+ 
+@@ -18,15 +20,14 @@ const querySchema = z.object({
+   page: z.coerce.number().int().min(1).default(1),
+   pageSize: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
+   ecosystem: z.string().trim().optional(),
+-  lifecycle: z.enum(lifecycleValues).optional(),
+-  busFactor1Only: booleanQueryParam,
++  lifecycle: z.enum(lifecycleValues).optional(), // TODO: filter not yet implemented in DAL
++  busFactor1Only: booleanQueryParam, // TODO: filter not yet implemented in DAL
+   staleOnly: booleanQueryParam,
+   unstewardedOnly: booleanQueryParam,
+   sortBy: z.enum(['name', 'health', 'impact', 'openVulns']).default('name'),
+   sortDir: z.enum(['asc', 'desc']).default('asc'),
+ })
+ 
+-// TODO: replace with real DB queries once packages DB is wired into the backend
+ export async function listPackages(req: Request, res: Response): Promise<void> {
+   const {
+     page,
+@@ -40,40 +41,32 @@ export async function listPackages(req: Request, res: Response): Promise<void> {
+     sortDir,
+   } = validateOrThrow(querySchema, req.query)
+ 
+-  const staleThreshold = new Date()
+-  staleThreshold.setMonth(staleThreshold.getMonth() - STALE_MONTHS)
+-
+-  let filtered = MOCK_PACKAGES.filter((p) => {
+-    if (ecosystem && p.ecosystem !== ecosystem) return false
+-    if (lifecycle && p.lifecycle !== lifecycle) return false
+-    if (busFactor1Only && p.maintainerBusFactor !== 1) return false
+-    if (unstewardedOnly && p.stewardship !== null && p.stewardship !== 'unassigned') return false
+-    if (staleOnly) {
+-      const lastRelease = MOCK_DETAILS[p.purl]?.general.riskSignals.lastRelease
+-      if (!lastRelease || new Date(lastRelease) >= staleThreshold) return false
+-    }
+-    return true
+-  })
++  // health is a v2 field with no backing column yet — fall back to name sort
++  const effectiveSortBy = sortBy === 'health' ? 'name' : sortBy
+ 
+-  filtered = filtered.sort((a, b) => {
+-    let cmp = 0
+-    if (sortBy === 'name') {
+-      cmp = a.name.localeCompare(b.name)
+-    } else if (sortBy === 'health') {
+-      cmp = (a.health ?? 0) - (b.health ?? 0)
+-    } else if (sortBy === 'impact') {
+-      cmp = (a.impact ?? 0) - (b.impact ?? 0)
+-    } else if (sortBy === 'openVulns') {
+-      const sumA = a.openVulns.low + a.openVulns.medium + a.openVulns.high + a.openVulns.critical
+-      const sumB = b.openVulns.low + b.openVulns.medium + b.openVulns.high + b.openVulns.critical
+-      cmp = sumA - sumB
+-    }
+-    return sortDir === 'desc' ? -cmp : cmp
++  const qx = await getPackagesQx()
++  const { rows, total } = await listPackagesForApi(qx, {
++    page,
++    pageSize,
++    ecosystem,
++    staleOnly,
++    unstewardedOnly,
++    sortBy: effectiveSortBy,
++    sortDir,
+   })
+ 
+-  const total = filtered.length
+-  const start = (page - 1) * pageSize
+-  const packages = filtered.slice(start, start + pageSize)
++  const packages = rows.map((r) => ({
++    purl: r.purl,
++    name: r.name,
++    ecosystem: r.ecosystem,
++    health: null,
++    impact: r.criticalityScore != null ? Math.round(Number(r.criticalityScore) * 100) : null,
++    lifecycle: null,
++    maintainerBusFactor: r.maintainerCount,
++    openVulns: r.openVulns,
++    stewardship: (r.stewardshipStatus ?? 'unassigned') as StewardshipStatus,
++    stewards: null,
++  }))
+ 
+   ok(res, {
+     page,
+@@ -86,7 +79,7 @@ export async function listPackages(req: Request, res: Response): Promise<void> {
+       staleOnly,
+       unstewardedOnly,
+     },
+-    sort: { by: sortBy, dir: sortDir },
++    sort: { by: effectiveSortBy, dir: sortDir },
+     packages,
+   })
+ }
+diff --git a/backend/src/conf/index.ts b/backend/src/conf/index.ts
+index dfebb3c4ea..553167cde5 100644
+--- a/backend/src/conf/index.ts
++++ b/backend/src/conf/index.ts
+@@ -82,6 +82,10 @@ export const PRODUCT_DB_CONFIG: IDatabaseConfig = config.has('productDb')
+   ? config.get<IDatabaseConfig>('productDb')
+   : undefined
+ 
++export const PACKAGES_DB_CONFIG: IDatabaseConfig | undefined = config.has('packagesDb')
++  ? config.get<IDatabaseConfig>('packagesDb')
++  : undefined
++
+ export const SEGMENT_CONFIG: SegmentConfiguration = config.get<SegmentConfiguration>('segment')
+ 
+ export const COMPREHEND_CONFIG: ComprehendConfiguration =
+diff --git a/backend/src/db/packagesDb.ts b/backend/src/db/packagesDb.ts
+new file mode 100644
+index 0000000000..48ad1d5821
+--- /dev/null
++++ b/backend/src/db/packagesDb.ts
+@@ -0,0 +1,23 @@
++import { getDbConnection } from '@crowd/data-access-layer/src/database'
++import { QueryExecutor, pgpQx } from '@crowd/data-access-layer/src/queryExecutor'
++
++import { PACKAGES_DB_CONFIG } from '@/conf'
++
++let _init: Promise<QueryExecutor> | undefined
++
++export function getPackagesQx(): Promise<QueryExecutor> {
++  if (!_init) {
++    if (!PACKAGES_DB_CONFIG) {
++      throw new Error(
++        'Packages DB is not configured — set CROWD_PACKAGES_DB_* environment variables',
++      )
++    }
++    _init = getDbConnection(PACKAGES_DB_CONFIG)
++      .then(pgpQx)
++      .catch((err) => {
++        _init = undefined
++        throw err
++      })
++  }
++  return _init
++}
+diff --git a/services/libs/data-access-layer/src/index.ts b/services/libs/data-access-layer/src/index.ts
+index 1070d84c1c..95b8cba162 100644
+--- a/services/libs/data-access-layer/src/index.ts
++++ b/services/libs/data-access-layer/src/index.ts
+@@ -22,3 +22,4 @@ export * from './osspckgs/packages'
+ export * from './osspckgs/repos'
+ export * from './osspckgs/stewardships'
+ export * from './osspckgs/versions'
++export * from './osspckgs/api'
+diff --git a/services/libs/data-access-layer/src/osspckgs/api.ts b/services/libs/data-access-layer/src/osspckgs/api.ts
+new file mode 100644
+index 0000000000..84903d8e25
+--- /dev/null
++++ b/services/libs/data-access-layer/src/osspckgs/api.ts
+@@ -0,0 +1,272 @@
++import { QueryExecutor } from '../queryExecutor'
++
++export interface PackageMetrics {
++  totalPackages: number
++  criticalPackages: number
++}
++
++export async function getPackageMetrics(qx: QueryExecutor): Promise<PackageMetrics> {
++  const row: { total: string; critical: string } = await qx.selectOne(`
++    SELECT
++      COUNT(*) AS total,
++      -- TODO: confirm with product whether "critical" here means health=critical, not has_critical_vulnerability
++      COUNT(*) FILTER (WHERE has_critical_vulnerability = true) AS critical
++    FROM packages
++    WHERE is_critical = true
++  `)
++  return {
++    totalPackages: parseInt(row.total, 10),
++    criticalPackages: parseInt(row.critical, 10),
++  }
++}
++
++export interface PackageStewardshipRow {
++  purl: string
++  name: string
++  ecosystem: string
++  criticalityScore: number | null
++  stewardshipStatus: string | null
++}
++
++export async function getPackagesByStewardshipPurls(
++  qx: QueryExecutor,
++  purls: string[],
++): Promise<PackageStewardshipRow[]> {
++  if (purls.length === 0) return []
++  return qx.select(
++    `
++    SELECT
++      p.purl,
++      p.name,
++      p.ecosystem,
++      p.impact AS "criticalityScore",
++      s.status AS "stewardshipStatus"
++    FROM packages p
++    LEFT JOIN stewardships s ON s.package_id = p.id
++    WHERE p.purl = ANY($(purls))
++    `,
++    { purls },
++  )
++}
++
++export interface PackageListRow {
++  purl: string
++  name: string
++  ecosystem: string
++  criticalityScore: number | null
++  stewardshipStatus: string | null
++  openVulns: number
++  maintainerCount: number
++  total: string
++}
++
++export interface ListPackagesOptions {
++  page: number
++  pageSize: number
++  ecosystem?: string
++  staleOnly: boolean
++  unstewardedOnly: boolean
++  sortBy: 'name' | 'impact' | 'openVulns'
++  sortDir: 'asc' | 'desc'
++}
++
++const STALE_MONTHS = 18
++
++export async function listPackagesForApi(
++  qx: QueryExecutor,
++  opts: ListPackagesOptions,
++): Promise<{ rows: PackageListRow[]; total: number }> {
++  const conditions: string[] = ['p.is_critical = true']
++  const params: Record<string, unknown> = {}
++
++  if (opts.ecosystem) {
++    conditions.push('p.ecosystem = $(ecosystem)')
++    params.ecosystem = opts.ecosystem
++  }
++
++  if (opts.staleOnly) {
++    conditions.push(
++      `(p.latest_release_at IS NULL OR p.latest_release_at < NOW() - INTERVAL '${STALE_MONTHS} months')`,
++    )
++  }
++
++  if (opts.unstewardedOnly) {
++    conditions.push(`(s.status = 'unassigned' OR s.id IS NULL)`)
++  }
++
++  const where = `WHERE ${conditions.join(' AND ')}`
++
++  // health is a v2 field — fall back to name sort
++  let sortExpr: string
++  if (opts.sortBy === 'impact') sortExpr = 'p.impact'
++  else if (opts.sortBy === 'openVulns') sortExpr = '"openVulns"'
++  else sortExpr = 'LOWER(p.name)'
++  const sortDir = opts.sortDir === 'desc' ? 'DESC' : 'ASC'
++
++  params.limit = opts.pageSize
++  params.offset = (opts.page - 1) * opts.pageSize
++
++  const rows: PackageListRow[] = await qx.select(
++    `
++    SELECT
++      p.purl,
++      p.name,
++      p.ecosystem,
++      p.impact AS "criticalityScore",
++      s.status AS "stewardshipStatus",
++      COALESCE(ap_counts.cnt, 0) AS "openVulns",
++      (SELECT COUNT(*)::int FROM package_maintainers pm WHERE pm.package_id = p.id) AS "maintainerCount",
++      COUNT(*) OVER() AS total
++    FROM packages p
++    LEFT JOIN stewardships s ON s.package_id = p.id
++    LEFT JOIN LATERAL (
++      SELECT COUNT(*)::int AS cnt FROM advisory_packages WHERE package_id = p.id
++    ) ap_counts ON true
++    ${where}
++    ORDER BY ${sortExpr} ${sortDir} NULLS LAST, p.purl ${sortDir}
++    LIMIT $(limit) OFFSET $(offset)
++    `,
++    params,
++  )
++
++  const total = rows.length > 0 ? parseInt(rows[0].total, 10) : 0
++  return { rows, total }
++}
++
++export interface PackageDetailRow {
++  id: string
++  purl: string
++  name: string
++  ecosystem: string
++  criticalityScore: number | null
++  dependentPackagesCount: number | null
++  dependentReposCount: number | null
++  latestVersion: string | null
++  versionsCount: number | null
++  latestReleaseAt: Date | null
++  declaredRepositoryUrl: string | null
++  repositoryUrl: string | null
++  hasCriticalVulnerability: boolean
++  stewardshipStatus: string | null
++  stewardshipLastStatusAt: Date | null
++  // from package_repos + repos
++  repoUrl: string | null
++  repoMappingConfidence: number | null
++  repoLastCommitAt: Date | null
++  scorecardScore: number | null
++  hasSecurityFile: boolean | null
++  hasSecurityPolicy: boolean | null
++  branchProtectionEnabled: boolean | null
++  // from downloads_last_30d
++  downloadsLast30d: string | null
++  maintainerCount: number
++  transitiveReach: number | null
++}
++
++export interface AdvisoryRow {
++  osvId: string
++  severity: string
++  resolution: 'open' | 'patched' | null
++}
++
++export async function getPackageDetailByPurl(
++  qx: QueryExecutor,
++  purl: string,
++): Promise<PackageDetailRow | null> {
++  return qx.selectOneOrNone(
++    `
++    SELECT
++      p.id::text AS id,
++      p.purl,
++      p.name,
++      p.ecosystem,
++      p.impact AS "criticalityScore",
++      p.dependent_count AS "dependentPackagesCount",
++      p.dependent_repos_count AS "dependentReposCount",
++      p.latest_version AS "latestVersion",
++      p.versions_count AS "versionsCount",
++      p.latest_release_at AS "latestReleaseAt",
++      p.declared_repository_url AS "declaredRepositoryUrl",
++      p.repository_url AS "repositoryUrl",
++      p.has_critical_vulnerability AS "hasCriticalVulnerability",
++      s.status AS "stewardshipStatus",
++      s.last_status_at AS "stewardshipLastStatusAt",
++      -- best repo link (highest confidence, prefer declared)
++      r.url AS "repoUrl",
++      pr.confidence AS "repoMappingConfidence",
++      r.last_commit_at AS "repoLastCommitAt",
++      r.scorecard_score AS "scorecardScore",
++      r.security_file_enabled AS "hasSecurityFile",
++      r.security_policy_enabled AS "hasSecurityPolicy",
++      r.branch_protection_enabled AS "branchProtectionEnabled",
++      -- latest 30-day download count
++      (
++        SELECT d.count::text
++        FROM downloads_last_30d d
++        WHERE d.purl = p.purl
++        ORDER BY d.end_date DESC
++        LIMIT 1
++      ) AS "downloadsLast30d",
++      (SELECT COUNT(*)::int FROM package_maintainers pm WHERE pm.package_id = p.id) AS "maintainerCount",
++      -- TODO: precompute and store in packages.transitive_reach_prank; full window scan is too slow at npm scale (~24s for npm)
++      -- (
++      --   SELECT r.prank
++      --   FROM (
++      --     SELECT purl, PERCENT_RANK() OVER (PARTITION BY ecosystem ORDER BY transitive_dependent_count ASC NULLS FIRST) AS prank
++      --     FROM packages
++      --     WHERE ecosystem = p.ecosystem
++      --   ) r
++      --   WHERE r.purl = p.purl
++      -- ) AS "transitiveReach"
++      NULL::float AS "transitiveReach"
++    FROM packages p
++    LEFT JOIN stewardships s ON s.package_id = p.id
++    LEFT JOIN LATERAL (
++      SELECT pr2.repo_id, pr2.confidence
++      FROM package_repos pr2
++      WHERE pr2.package_id = p.id
++      ORDER BY pr2.confidence DESC, (pr2.source = 'declared') DESC
++      LIMIT 1
++    ) pr ON true
++    LEFT JOIN repos r ON r.id = pr.repo_id
++    WHERE p.purl = $(purl)
++    `,
++    { purl },
++  )
++}
++
++export async function getAdvisoriesByPackageId(
++  qx: QueryExecutor,
++  packageId: string,
++): Promise<AdvisoryRow[]> {
++  return qx.select(
++    `
++    SELECT
++      a.osv_id AS "osvId",
++      LOWER(a.severity) AS severity,
++      CASE
++        WHEN p.latest_version IS NULL THEN NULL
++        WHEN COUNT(ar.id) = 0 THEN NULL
++        -- TODO: text comparison is lexicographic, not semver — '1.9.0' >= '1.10.0' is TRUE here.
++        -- Replace with a proper semver comparison function when one is available in the DB.
++        WHEN BOOL_AND(
++          CASE
++            WHEN ar.fixed_version IS NULL AND ar.last_affected IS NULL THEN FALSE
++            WHEN ar.fixed_version IS NOT NULL AND p.latest_version >= ar.fixed_version THEN TRUE
++            WHEN ar.fixed_version IS NOT NULL THEN FALSE
++            WHEN ar.last_affected IS NOT NULL AND p.latest_version > ar.last_affected THEN TRUE
++            ELSE FALSE
++          END
++        ) THEN 'patched'
++        ELSE 'open'
++      END AS resolution
++    FROM advisory_packages ap
++    JOIN advisories a ON a.id = ap.advisory_id
++    LEFT JOIN advisory_affected_ranges ar ON ar.advisory_package_id = ap.id
++    JOIN packages p ON p.id = ap.package_id
++    WHERE ap.package_id = $(packageId)::bigint
++    GROUP BY a.osv_id, a.severity, p.latest_version
++    `,
++    { packageId },
++  )
++}
+diff --git a/services/libs/data-access-layer/src/osspckgs/index.ts b/services/libs/data-access-layer/src/osspckgs/index.ts
+index 65228ac4d7..5b3e9b3641 100644
+--- a/services/libs/data-access-layer/src/osspckgs/index.ts
++++ b/services/libs/data-access-layer/src/osspckgs/index.ts
+@@ -4,3 +4,4 @@ export * from './maintainers'
+ export * from './versions'
+ export * from './repos'
+ export * from './stewardships'
++export * from './api'

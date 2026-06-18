@@ -1,0 +1,439 @@
+diff --git a/backend/src/api/public/v1/packages/batchGetStewardship.ts b/backend/src/api/public/v1/packages/batchGetStewardship.ts
+index 9c140a8eca..e888f1b5c8 100644
+--- a/backend/src/api/public/v1/packages/batchGetStewardship.ts
++++ b/backend/src/api/public/v1/packages/batchGetStewardship.ts
+@@ -5,6 +5,7 @@ import { ok } from '@/utils/api'
+ import { validateOrThrow } from '@/utils/validation'
+ 
+ import { MOCK_DETAILS } from './mockData'
++import type { OpenVulns, StewardshipSummary } from './types'
+ 
+ const MAX_PURLS = 100
+ 
+@@ -15,19 +16,6 @@ const bodySchema = z.object({
+     .max(MAX_PURLS, `Maximum ${MAX_PURLS} purls per request`),
+ })
+ 
+-interface StewardshipSummary {
+-  name: string
+-  ecosystem: string
+-  lifecycle: string
+-  health: number
+-  impact: number
+-  openVulns: { low: number; medium: number; high: number; critical: number }
+-  stewardship: string
+-  stewards: null
+-  lastActivityAt: null
+-  lastActivityDescription: null
+-}
+-
+ // TODO: replace with real DB queries once stewardship tables land
+ export async function batchGetStewardship(req: Request, res: Response): Promise<void> {
+   const { purls } = validateOrThrow(bodySchema, req.body)
+@@ -38,11 +26,9 @@ export async function batchGetStewardship(req: Request, res: Response): Promise<
+     if (!detail) {
+       packages[purl] = null
+     } else {
+-      const openVulns = { low: 0, medium: 0, high: 0, critical: 0 }
++      const openVulns: OpenVulns = { low: 0, medium: 0, high: 0, critical: 0 }
+       for (const advisory of detail.security.advisories) {
+-        if (advisory.severity in openVulns) {
+-          openVulns[advisory.severity] += 1
+-        }
++        openVulns[advisory.severity] += 1
+       }
+       packages[purl] = {
+         name: detail.name,
+@@ -51,8 +37,8 @@ export async function batchGetStewardship(req: Request, res: Response): Promise<
+         health: detail.general.healthScore.total,
+         impact: detail.general.impact.impactScore,
+         openVulns,
+-        stewardship: 'unassigned',
+-        stewards: null,
++        stewardship: detail.stewardship.status,
++        stewards: detail.stewardship.stewards,
+         lastActivityAt: null,
+         lastActivityDescription: null,
+       }
+diff --git a/backend/src/api/public/v1/packages/listPackages.ts b/backend/src/api/public/v1/packages/listPackages.ts
+index 2077cb0d09..6e912c3581 100644
+--- a/backend/src/api/public/v1/packages/listPackages.ts
++++ b/backend/src/api/public/v1/packages/listPackages.ts
+@@ -47,7 +47,7 @@ export async function listPackages(req: Request, res: Response): Promise<void> {
+     if (ecosystem && p.ecosystem !== ecosystem) return false
+     if (lifecycle && p.lifecycle !== lifecycle) return false
+     if (busFactor1Only && p.maintainerBusFactor !== 1) return false
+-    if (unstewardedOnly && p.stewardship !== 'unassigned') return false
++    if (unstewardedOnly && p.stewardship !== null && p.stewardship !== 'unassigned') return false
+     if (staleOnly) {
+       const lastRelease = MOCK_DETAILS[p.purl]?.general.riskSignals.lastRelease
+       if (!lastRelease || new Date(lastRelease) >= staleThreshold) return false
+diff --git a/backend/src/api/public/v1/packages/mockData.ts b/backend/src/api/public/v1/packages/mockData.ts
+index 7f68414fd3..3b78a2b5ae 100644
+--- a/backend/src/api/public/v1/packages/mockData.ts
++++ b/backend/src/api/public/v1/packages/mockData.ts
+@@ -1,14 +1,16 @@
++import type { Lifecycle, OpenVulns, SeverityLevel, Steward, StewardshipStatus } from './types'
++
+ export interface MockPackageListItem {
+   purl: string
+   name: string
+   ecosystem: string
+   health: number
+   impact: number
+-  lifecycle: 'active' | 'stable' | 'declining' | 'abandoned'
++  lifecycle: Lifecycle
+   maintainerBusFactor: number
+-  openVulns: { low: number; medium: number; high: number; critical: number }
+-  stewardship: string
+-  steward: null
++  openVulns: OpenVulns
++  stewardship: StewardshipStatus | null
++  stewards: Steward[] | null
+ }
+ 
+ export interface MockPackageDetail {
+@@ -30,19 +32,19 @@ export interface MockPackageDetail {
+       transitiveReach: string
+     }
+     riskSignals: {
+-      lifecycle: string
++      lifecycle: Lifecycle
+       maintainerBusFactor: number
+       lastRelease: string
+       hasSecurityFile: null
+       openSSFScorecard: number
+     }
+   }
+-  assessment: Record<string, never>
++  assessment: Record<string, unknown>
+   security: {
+     securityContacts: null
+     advisories: Array<{
+       osvId: string
+-      severity: 'critical' | 'high' | 'medium' | 'low'
++      severity: SeverityLevel
+       resolution: null
+     }>
+     cvd: {
+@@ -56,7 +58,12 @@ export interface MockPackageDetail {
+     repositoryMapping: { declaredRepo: string; mappingConfidence: number; lastCommitAt: string }
+     supplyChainIntegrity: { buildProvenance: null; signedReleases: null }
+   }
+-  history: Record<string, never>
++  stewardship: {
++    status: StewardshipStatus
++    stewards: Steward[] | null
++    lastActivityAt: string | null
++  }
++  history: Record<string, unknown>
+ }
+ 
+ export const MOCK_PACKAGES: MockPackageListItem[] = [
+@@ -70,7 +77,7 @@ export const MOCK_PACKAGES: MockPackageListItem[] = [
+     maintainerBusFactor: 1,
+     openVulns: { low: 0, medium: 0, high: 1, critical: 0 },
+     stewardship: 'unassigned',
+-    steward: null,
++    stewards: null,
+   },
+   {
+     purl: 'pkg:maven/org.apache.commons/commons-lang3@3.12.0',
+@@ -82,7 +89,7 @@ export const MOCK_PACKAGES: MockPackageListItem[] = [
+     maintainerBusFactor: 3,
+     openVulns: { low: 0, medium: 0, high: 0, critical: 0 },
+     stewardship: 'unassigned',
+-    steward: null,
++    stewards: null,
+   },
+   {
+     purl: 'pkg:npm/minimist@1.2.6',
+@@ -94,7 +101,7 @@ export const MOCK_PACKAGES: MockPackageListItem[] = [
+     maintainerBusFactor: 1,
+     openVulns: { low: 0, medium: 1, high: 0, critical: 1 },
+     stewardship: 'unassigned',
+-    steward: null,
++    stewards: null,
+   },
+ ]
+ 
+@@ -144,6 +151,7 @@ export const MOCK_DETAILS: Record<string, MockPackageDetail> = {
+       },
+       supplyChainIntegrity: { buildProvenance: null, signedReleases: null },
+     },
++    stewardship: { status: 'unassigned', stewards: null, lastActivityAt: null },
+     history: {},
+   },
+   'pkg:maven/org.apache.commons/commons-lang3@3.12.0': {
+@@ -191,6 +199,7 @@ export const MOCK_DETAILS: Record<string, MockPackageDetail> = {
+       },
+       supplyChainIntegrity: { buildProvenance: null, signedReleases: null },
+     },
++    stewardship: { status: 'unassigned', stewards: null, lastActivityAt: null },
+     history: {},
+   },
+   'pkg:npm/minimist@1.2.6': {
+@@ -241,6 +250,7 @@ export const MOCK_DETAILS: Record<string, MockPackageDetail> = {
+       },
+       supplyChainIntegrity: { buildProvenance: null, signedReleases: null },
+     },
++    stewardship: { status: 'unassigned', stewards: null, lastActivityAt: null },
+     history: {},
+   },
+ }
+diff --git a/backend/src/api/public/v1/packages/openapi.yaml b/backend/src/api/public/v1/packages/openapi.yaml
+index 5f5d2936f6..17bf9d3aab 100644
+--- a/backend/src/api/public/v1/packages/openapi.yaml
++++ b/backend/src/api/public/v1/packages/openapi.yaml
+@@ -105,7 +105,8 @@ components:
+     StewardshipSummary:
+       type: object
+       description: Null if the purl is not found in CDP.
+-      required: [name, ecosystem, stewardship, stewards, lastActivityAt, lastActivityDescription]
++      required:
++        [name, ecosystem, stewardship, stewards, openVulns, lastActivityAt, lastActivityDescription]
+       properties:
+         name:
+           type: string
+@@ -135,9 +136,11 @@ components:
+         stewardship:
+           $ref: '#/components/schemas/StewardshipStatus'
+         stewards:
+-          description: Single steward or null. Empty in v1.
++          description: Assigned stewards or null. Empty in v1.
+           oneOf:
+-            - $ref: '#/components/schemas/Steward'
++            - type: array
++              items:
++                $ref: '#/components/schemas/Steward'
+             - type: 'null'
+         lastActivityAt:
+           type:
+@@ -193,10 +196,12 @@ components:
+             - type: 'null'
+         stewardship:
+           $ref: '#/components/schemas/StewardshipStatus'
+-        steward:
+-          description: Single assigned steward or null.
++        stewards:
++          description: Assigned stewards or null.
+           oneOf:
+-            - $ref: '#/components/schemas/Steward'
++            - type: array
++              items:
++                $ref: '#/components/schemas/Steward'
+             - type: 'null'
+ 
+     # ── Package detail ───────────────────────────────────────────────────────────
+@@ -411,6 +416,25 @@ components:
+                   type:
+                     - string
+                     - 'null'
++        stewardship:
++          type: object
++          description: Stewardship state. In v1 always unassigned with no stewards or activity.
++          properties:
++            status:
++              $ref: '#/components/schemas/StewardshipStatus'
++            stewards:
++              description: Assigned stewards or null. Null in v1.
++              oneOf:
++                - type: array
++                  items:
++                    $ref: '#/components/schemas/Steward'
++                - type: 'null'
++            lastActivityAt:
++              type:
++                - string
++                - 'null'
++              format: date-time
++              description: Null in v1.
+         history:
+           type: object
+           description: Package history data. Empty in v1.
+@@ -657,6 +681,10 @@ paths:
+                   supplyChainIntegrity:
+                     buildProvenance: null
+                     signedReleases: null
++                stewardship:
++                  status: unassigned
++                  stewards: null
++                  lastActivityAt: null
+                 history: {}
+         '404':
+           description: Package not found.
+diff --git a/backend/src/api/public/v1/packages/types.ts b/backend/src/api/public/v1/packages/types.ts
+new file mode 100644
+index 0000000000..7fad33aed5
+--- /dev/null
++++ b/backend/src/api/public/v1/packages/types.ts
+@@ -0,0 +1,40 @@
++export type StewardshipStatus =
++  | 'unassigned'
++  | 'open'
++  | 'assessing'
++  | 'active'
++  | 'needs_attention'
++  | 'escalated'
++  | 'blocked'
++  | 'inactive'
++
++export type Lifecycle = 'active' | 'stable' | 'declining' | 'abandoned'
++
++export type SeverityLevel = 'critical' | 'high' | 'medium' | 'low'
++
++export interface OpenVulns {
++  low: number
++  medium: number
++  high: number
++  critical: number
++}
++
++export interface Steward {
++  userId: string
++  name: string
++  role: 'lead' | 'co_steward'
++  assignedAt: string
++}
++
++export interface StewardshipSummary {
++  name: string
++  ecosystem: string
++  lifecycle: Lifecycle | null
++  health: number | null
++  impact: number | null
++  openVulns: OpenVulns | null
++  stewardship: StewardshipStatus | null
++  stewards: Steward[] | null
++  lastActivityAt: string | null
++  lastActivityDescription: string | null
++}
+diff --git a/backend/src/osspckgs/migrations/V1781094067__stewardship-tables.sql b/backend/src/osspckgs/migrations/V1781094067__stewardship-tables.sql
+new file mode 100644
+index 0000000000..4236dc172a
+--- /dev/null
++++ b/backend/src/osspckgs/migrations/V1781094067__stewardship-tables.sql
+@@ -0,0 +1,123 @@
++-- Stewardship tables for the OSSPREY Self Serve program (v1).
++-- In v1: only `stewardships` is populated (one unassigned row per critical package).
++-- All other tables are schema-only — empty until v2 write flows land.
++
++CREATE TABLE IF NOT EXISTS stewardships (
++    id              BIGSERIAL PRIMARY KEY,
++    package_id      BIGINT NOT NULL REFERENCES packages(id),
++    status          TEXT NOT NULL,      -- 'unassigned'|'open'|'assessing'|'active'|'needs_attention'|'escalated'|'blocked'|'inactive'
++    origin          TEXT NOT NULL,      -- 'auto_imported'|'self_claimed'|'assigned'|'opened_for_claim'
++    version         INT NOT NULL DEFAULT 1,
++    opened_at       TIMESTAMPTZ,
++    last_status_at  TIMESTAMPTZ,
++    inactive_reason TEXT,               -- 'quarterly_cadence_missed'|'stepped_down'|'no_longer_critical'
++    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    UNIQUE (package_id)
++);
++
++CREATE INDEX IF NOT EXISTS stewardships_status_idx
++    ON stewardships (status);
++CREATE INDEX IF NOT EXISTS stewardships_last_status_at_active_idx
++    ON stewardships (last_status_at) WHERE status = 'active';
++
++-- Many-to-many stewards. Empty in v1; soft-delete preserves historical membership.
++CREATE TABLE IF NOT EXISTS stewardship_stewards (
++    id              BIGSERIAL PRIMARY KEY,
++    stewardship_id  BIGINT NOT NULL REFERENCES stewardships(id),
++    user_id         TEXT NOT NULL,
++    role            TEXT NOT NULL,      -- 'lead'|'co_steward'
++    assigned_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    assigned_by     TEXT,
++    deleted_at      TIMESTAMPTZ
++);
++
++CREATE UNIQUE INDEX IF NOT EXISTS stewardship_stewards_active_unique
++    ON stewardship_stewards (stewardship_id, user_id)
++    WHERE deleted_at IS NULL;
++CREATE INDEX IF NOT EXISTS stewardship_stewards_user_id_active_idx
++    ON stewardship_stewards (user_id) WHERE deleted_at IS NULL;
++
++-- Append-only audit log. Empty in v1.
++CREATE TABLE IF NOT EXISTS stewardship_activity (
++    id              BIGSERIAL PRIMARY KEY,
++    stewardship_id  BIGINT NOT NULL REFERENCES stewardships(id),
++    actor_user_id   TEXT,               -- NULL for system events
++    actor_type      TEXT NOT NULL,      -- 'user'|'system'
++    activity_type   TEXT NOT NULL,      -- 'state_changed'|'assessment_completed'|'assessment_flagged'|
++                                        -- 'remediation_logged'|'status_update'|'escalation'|
++                                        -- 'escalation_resolved'|'blocker_added'|'blocker_resolved'|
++                                        -- 'steward_added'|'steward_removed'
++    content         TEXT,
++    metadata        JSONB,
++    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++CREATE INDEX IF NOT EXISTS stewardship_activity_stewardship_id_created_at_idx
++    ON stewardship_activity (stewardship_id, created_at DESC);
++
++-- One current assessment per stewardship; historical ones preserved via superseded_at.
++CREATE TABLE IF NOT EXISTS stewardship_assessments (
++    id                    BIGSERIAL PRIMARY KEY,
++    stewardship_id        BIGINT NOT NULL REFERENCES stewardships(id),
++    posture               TEXT,
++    summary               TEXT,
++    security_contact      TEXT,
++    disclosure_preference TEXT,
++    tier_0_ready          BOOL NOT NULL DEFAULT FALSE,
++    monitoring_plan       TEXT,
++    draft                 BOOL NOT NULL DEFAULT TRUE,
++    completed_at          TIMESTAMPTZ,
++    completed_by          TEXT,
++    reviewed              BOOL NOT NULL DEFAULT FALSE,
++    reviewed_at           TIMESTAMPTZ,
++    reviewed_by           TEXT,
++    flagged               BOOL NOT NULL DEFAULT FALSE,
++    flag_note             TEXT,
++    superseded_at         TIMESTAMPTZ,
++    superseded_by_id      BIGINT REFERENCES stewardship_assessments(id),
++    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()   -- tracks mutations: reviewed, flagged, superseded_at
++);
++
++CREATE INDEX IF NOT EXISTS stewardship_assessments_stewardship_id_superseded_at_idx
++    ON stewardship_assessments (stewardship_id, superseded_at);
++CREATE UNIQUE INDEX IF NOT EXISTS stewardship_assessments_one_current
++    ON stewardship_assessments (stewardship_id)
++    WHERE superseded_at IS NULL;
++
++-- Per-dimension findings. assessment_id links a finding to the assessment that produced it.
++CREATE TABLE IF NOT EXISTS stewardship_findings (
++    id              BIGSERIAL PRIMARY KEY,
++    stewardship_id  BIGINT NOT NULL REFERENCES stewardships(id),
++    assessment_id   BIGINT REFERENCES stewardship_assessments(id),  -- NULL until assessment flow lands in v2
++    dimension       TEXT NOT NULL,      -- 'maintainer_health'|'security_posture'|'vulnerability_exposure'|
++                                        -- 'dependency_risk'|'supply_chain_integrity'|'release_health'
++    severity        TEXT NOT NULL,      -- 'critical'|'high'|'medium'|'low'|'informational'
++    finding         TEXT NOT NULL,
++    evidence        TEXT,
++    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++CREATE INDEX IF NOT EXISTS stewardship_findings_stewardship_id_idx
++    ON stewardship_findings (stewardship_id);
++CREATE INDEX IF NOT EXISTS stewardship_findings_dimension_severity_idx
++    ON stewardship_findings (dimension, severity);
++
++-- Concrete remediation actions. Empty in v1.
++CREATE TABLE IF NOT EXISTS stewardship_remediation_actions (
++    id              BIGSERIAL PRIMARY KEY,
++    stewardship_id  BIGINT NOT NULL REFERENCES stewardships(id),
++    finding_id      BIGINT REFERENCES stewardship_findings(id),
++    action          TEXT NOT NULL,
++    status          TEXT NOT NULL,      -- 'pending'|'in_progress'|'done'|'blocked'|'abandoned'
++    url             TEXT,
++    notes           TEXT,
++    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    completed_at    TIMESTAMPTZ
++);
++
++CREATE INDEX IF NOT EXISTS stewardship_remediation_actions_stewardship_id_status_idx
++    ON stewardship_remediation_actions (stewardship_id, status);

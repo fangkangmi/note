@@ -1,0 +1,45 @@
+diff --git a/backend/src/database/migrations/V1781455484__add-similarity-indexes-on-merge-raw-tables.sql b/backend/src/database/migrations/V1781455484__add-similarity-indexes-on-merge-raw-tables.sql
+new file mode 100644
+index 0000000000..36293883b8
+--- /dev/null
++++ b/backend/src/database/migrations/V1781455484__add-similarity-indexes-on-merge-raw-tables.sql
+@@ -0,0 +1,7 @@
++-- Supports similarity range filtering used by
++-- getRawMemberSuggestions / getRawOrganizationSuggestions.
++create index concurrently if not exists "ix_memberToMergeRaw_similarity"
++  on "memberToMergeRaw" (similarity);
++
++create index concurrently if not exists "ix_organizationToMergeRaw_similarity"
++  on "organizationToMergeRaw" (similarity);
+diff --git a/services/libs/data-access-layer/src/old/apps/merge_suggestions_worker/memberMergeSuggestions.repo.ts b/services/libs/data-access-layer/src/old/apps/merge_suggestions_worker/memberMergeSuggestions.repo.ts
+index d81b3993c5..d595c47ee1 100644
+--- a/services/libs/data-access-layer/src/old/apps/merge_suggestions_worker/memberMergeSuggestions.repo.ts
++++ b/services/libs/data-access-layer/src/old/apps/merge_suggestions_worker/memberMergeSuggestions.repo.ts
+@@ -316,7 +316,6 @@ class MemberMergeSuggestionsRepository {
+                      )
+                      ${similarityLTEFilter}
+                      ${similarityGTEFilter}
+-                     order by mtmr."memberId" desc
+                      limit $(limit);`
+ 
+     const results: IRawMemberMergeSuggestionResult[] = await this.connection.any(
+diff --git a/services/libs/data-access-layer/src/old/apps/merge_suggestions_worker/organizationMergeSuggestions.repo.ts b/services/libs/data-access-layer/src/old/apps/merge_suggestions_worker/organizationMergeSuggestions.repo.ts
+index 0fb83e7a4b..fb2fdb0e54 100644
+--- a/services/libs/data-access-layer/src/old/apps/merge_suggestions_worker/organizationMergeSuggestions.repo.ts
++++ b/services/libs/data-access-layer/src/old/apps/merge_suggestions_worker/organizationMergeSuggestions.repo.ts
+@@ -293,7 +293,6 @@ class OrganizationMergeSuggestionsRepository {
+ 
+                             )
+                      )
+-                     order by s."organizationId" desc
+                      limit $(limit);`
+     } else {
+       query = `select * from "organizationToMergeRaw" otmr
+@@ -314,7 +313,6 @@ class OrganizationMergeSuggestionsRepository {
+                      )
+                      ${similarityLTEFilter}
+                      ${similarityGTEFilter}
+-                     order by otmr."organizationId" desc
+                      limit $(limit);`
+     }
+ 

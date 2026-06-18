@@ -1,0 +1,567 @@
+diff --git a/backend/src/osspckgs/migrations/V1781514035__ranking-job-kind.sql b/backend/src/osspckgs/migrations/V1781514035__ranking-job-kind.sql
+new file mode 100644
+index 0000000000..8cfa62ab07
+--- /dev/null
++++ b/backend/src/osspckgs/migrations/V1781514035__ranking-job-kind.sql
+@@ -0,0 +1,5 @@
++-- Drop CHECK constraints on job_kind and sync_mode so new kinds can be added
++-- without a migration every time.
++ALTER TABLE osspckgs_ingest_jobs
++  DROP CONSTRAINT osspckgs_ingest_jobs_job_kind_check,
++  DROP CONSTRAINT osspckgs_ingest_jobs_sync_mode_check;
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 510edcbea3..4eb8f742ab 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1315,6 +1315,9 @@ importers:
+       '@crowd/logging':
+         specifier: workspace:*
+         version: link:../../libs/logging
++      '@crowd/slack':
++        specifier: workspace:*
++        version: link:../../libs/slack
+       '@crowd/temporal':
+         specifier: workspace:*
+         version: link:../../libs/temporal
+diff --git a/scripts/cli b/scripts/cli
+index 9f3ce75aac..0c9ce03ded 100755
+--- a/scripts/cli
++++ b/scripts/cli
+@@ -218,12 +218,18 @@ function multiselect {
+ SELECTED_SERVICES=()
+ 
+ function select_services() {
+-    # Get all services
++    # Get all deployable services from builder definitions
+     SERVICES=()
+-    while IFS= read -r file; do
+-        filename=$(basename "$file" .yaml)
+-        SERVICES+=("$filename")
+-    done < <(find "$CLI_HOME/services" -name '*.yaml')
++    for env_file in "$CLI_HOME/builders/"*.env; do
++        services_line=$(grep "^SERVICES=" "$env_file" 2>/dev/null || true)
++        if [[ -n "$services_line" ]]; then
++            services_val="${services_line#SERVICES=}"
++            services_val="${services_val//\"/}"
++            for svc in $services_val; do
++                SERVICES+=("$svc")
++            done
++        fi
++    done
+ 
+     # Use fzf if available, fall back to built-in multiselect
+     if command -v fzf &>/dev/null; then
+@@ -251,7 +257,7 @@ function select_services() {
+ 
+ function deploy_staging() {
+     REPOSITORY="CrowdDotDev/crowd.dev"
+-    WORKFLOW_FILE="lf-staging-deploy.yaml"
++    WORKFLOW_FILE="lf-oracle-staging-deploy.yaml"
+     CURRENT_BRANCH=$(git branch --show-current)
+     SERVICES="$(
+         IFS=" "
+@@ -263,7 +269,7 @@ function deploy_staging() {
+ 
+ function deploy_production() {
+     REPOSITORY="CrowdDotDev/crowd.dev"
+-    WORKFLOW_FILE="lf-production-deploy.yaml"
++    WORKFLOW_FILE="lf-oracle-production-deploy.yaml"
+     CURRENT_BRANCH=$(git branch --show-current)
+     SERVICES="$(
+         IFS=" "
+diff --git a/services/apps/packages_worker/package.json b/services/apps/packages_worker/package.json
+index 611fea1e64..52abd880b0 100644
+--- a/services/apps/packages_worker/package.json
++++ b/services/apps/packages_worker/package.json
+@@ -50,6 +50,7 @@
+     "@crowd/data-access-layer": "workspace:*",
+     "@crowd/database": "workspace:*",
+     "@crowd/logging": "workspace:*",
++    "@crowd/slack": "workspace:*",
+     "@dsnp/parquetjs": "^1.7.0",
+     "@google-cloud/bigquery": "^8.3.1",
+     "@google-cloud/storage": "7.19.0",
+diff --git a/services/apps/packages_worker/src/activities.ts b/services/apps/packages_worker/src/activities.ts
+index 2b80ec4f2f..41ee885e50 100644
+--- a/services/apps/packages_worker/src/activities.ts
++++ b/services/apps/packages_worker/src/activities.ts
+@@ -13,3 +13,4 @@ export {
+ export * from './deps-dev/activities'
+ export { osvSyncEcosystem, osvDeriveCriticalFlag } from './osv/activities'
+ export { processMavenCriticalBatch, processMavenNonCriticalBatch } from './maven/activities'
++export { criticalityComputePageRank, rankPackages } from './criticality/activities'
+diff --git a/services/apps/packages_worker/src/criticality/activities.ts b/services/apps/packages_worker/src/criticality/activities.ts
+index 3066328fb5..1f1ef1a1d8 100644
+--- a/services/apps/packages_worker/src/criticality/activities.ts
++++ b/services/apps/packages_worker/src/criticality/activities.ts
+@@ -1,5 +1,6 @@
+ import { Context } from '@temporalio/activity'
+ 
++import { createIngestJob, markJobStatus } from '@crowd/data-access-layer'
+ import { getServiceChildLogger } from '@crowd/logging'
+ 
+ import { getPackagesDb } from '../db'
+@@ -63,3 +64,34 @@ export async function criticalityComputePageRank(
+ 
+   return { ecosystem, nodeCount: graph.N, edgeCount, iterations, durationMs: Date.now() - start }
+ }
++
++export async function rankPackages(): Promise<{ scoredRows: number; rankedRows: number }> {
++  const qx = await getPackagesDb()
++
++  // On retry, a pending row from the prior attempt may already exist — reuse it.
++  // Do NOT reuse a done row: it belongs to a previous bootstrap run and ranking must re-execute.
++  const existing = await qx.selectOneOrNone(
++    `SELECT id FROM osspckgs_ingest_jobs
++     WHERE job_kind = 'ranking' AND status = 'pending'
++     ORDER BY id DESC LIMIT 1`,
++  )
++
++  const jobId = existing?.id ?? (await createIngestJob(qx, 'ranking', 'ranking', null))
++  try {
++    const [result] = await qx.select(`SELECT * FROM rank_packages()`)
++    const scoredRows = Number(result.scored_rows ?? 0)
++    const rankedRows = Number(result.ranked_rows ?? 0)
++    await markJobStatus(qx, jobId, 'done', {
++      rowCountPg: scoredRows,
++      tableRowCounts: { scored: scoredRows, ranked: rankedRows },
++      finishedAt: new Date(),
++    })
++    return { scoredRows, rankedRows }
++  } catch (err) {
++    await markJobStatus(qx, jobId, 'failed', {
++      errorMessage: (err as Error).message,
++      finishedAt: new Date(),
++    })
++    throw err
++  }
++}
+diff --git a/services/apps/packages_worker/src/criticality/workflow.ts b/services/apps/packages_worker/src/criticality/workflow.ts
+new file mode 100644
+index 0000000000..903812d263
+--- /dev/null
++++ b/services/apps/packages_worker/src/criticality/workflow.ts
+@@ -0,0 +1,12 @@
++import { proxyActivities } from '@temporalio/workflow'
++
++import type * as critActivities from './activities'
++
++const { rankPackages } = proxyActivities<typeof critActivities>({
++  startToCloseTimeout: '30 minutes',
++  retry: { maximumAttempts: 2 },
++})
++
++export async function rankPackagesWorkflow(): Promise<void> {
++  await rankPackages()
++}
+diff --git a/services/apps/packages_worker/src/deps-dev/activities/checkDependentCountsGuard.ts b/services/apps/packages_worker/src/deps-dev/activities/checkDependentCountsGuard.ts
+new file mode 100644
+index 0000000000..016ee35197
+--- /dev/null
++++ b/services/apps/packages_worker/src/deps-dev/activities/checkDependentCountsGuard.ts
+@@ -0,0 +1,55 @@
++import { getLastCompletedJobRowCount as dalGetLastCompletedJobRowCount } from '@crowd/data-access-layer'
++import { SlackChannel, SlackPersona, sendSlackNotification } from '@crowd/slack'
++
++import { getPackagesDb } from '../../db'
++
++export interface CheckDependentCountsGuardInput {
++  currentRowCount: number
++  snapshotDate: string
++}
++
++export interface CheckDependentCountsGuardOutput {
++  ok: boolean
++  prevRowCount: number | null
++  dropPct: number | null
++}
++
++const DROP_THRESHOLD = 0.05
++
++export async function checkDependentCountsGuard(
++  input: CheckDependentCountsGuardInput,
++): Promise<CheckDependentCountsGuardOutput> {
++  const qx = await getPackagesDb()
++  const prevRowCount = await dalGetLastCompletedJobRowCount(qx, 'dependent_counts')
++
++  if (prevRowCount === null || prevRowCount <= 0) {
++    return { ok: true, prevRowCount, dropPct: null }
++  }
++
++  const dropPct = (prevRowCount - input.currentRowCount) / prevRowCount
++
++  if (dropPct >= DROP_THRESHOLD) {
++    sendSlackNotification(
++      SlackChannel.CDP_CRITICAL_ALERTS,
++      SlackPersona.CRITICAL_ALERTER,
++      ':warning: dependent_counts row count anomaly detected',
++      [
++        {
++          title: 'Snapshot',
++          text: input.snapshotDate,
++        },
++        {
++          title: 'Row count',
++          text: `${input.currentRowCount.toLocaleString()} (prev max: ${prevRowCount.toLocaleString()}, drop: ${(dropPct * 100).toFixed(1)}%)`,
++        },
++        {
++          title: 'Action',
++          text: 'Ingest aborted — existing `dependent_count` values preserved. Check deps.dev `Dependents` table for this snapshot date.',
++        },
++      ],
++    )
++    return { ok: false, prevRowCount, dropPct }
++  }
++
++  return { ok: true, prevRowCount, dropPct }
++}
+diff --git a/services/apps/packages_worker/src/deps-dev/activities/index.ts b/services/apps/packages_worker/src/deps-dev/activities/index.ts
+index 3b9c3ca8a9..94085de19a 100644
+--- a/services/apps/packages_worker/src/deps-dev/activities/index.ts
++++ b/services/apps/packages_worker/src/deps-dev/activities/index.ts
+@@ -8,5 +8,6 @@ export * from './listParquetFiles'
+ export * from './gcsParquetToStaging'
+ export * from './mergeStagingToTable'
+ export * from './getLastSnapshot'
++export * from './checkDependentCountsGuard'
+ export * from './probePartitionExists'
+ export * from './resolveSnapshotDate'
+diff --git a/services/apps/packages_worker/src/deps-dev/queries/dependentCountsSql.ts b/services/apps/packages_worker/src/deps-dev/queries/dependentCountsSql.ts
+index 62a69b2671..9a949cc4a0 100644
+--- a/services/apps/packages_worker/src/deps-dev/queries/dependentCountsSql.ts
++++ b/services/apps/packages_worker/src/deps-dev/queries/dependentCountsSql.ts
+@@ -14,8 +14,8 @@ WITH purl_map AS (
+ )
+ SELECT
+   pm.purl                                                                                                  AS purl,
+-  COUNT(DISTINCT IF(d.MinimumDepth = 1, CONCAT(d.Dependent.System, ':', d.Dependent.Name), NULL))         AS dependent_count,
+-  COUNT(DISTINCT IF(d.MinimumDepth > 1, CONCAT(d.Dependent.System, ':', d.Dependent.Name), NULL))         AS transitive_dependent_count,
++  COUNT(DISTINCT IF(d.MinimumDepth = 1 AND d.Dependent.Name NOT LIKE '%>%', CONCAT(d.Dependent.System, ':', d.Dependent.Name), NULL))         AS dependent_count,
++  COUNT(DISTINCT IF(d.MinimumDepth > 1 AND d.Dependent.Name NOT LIKE '%>%', CONCAT(d.Dependent.System, ':', d.Dependent.Name), NULL))         AS transitive_dependent_count,
+   COUNT(DISTINCT pvp.ProjectName)                                                                          AS dependent_repos_count
+ FROM \`bigquery-public-data.deps_dev_v1.Dependents\` d
+ JOIN purl_map pm ON pm.System = d.System AND pm.Name = d.Name
+diff --git a/services/apps/packages_worker/src/deps-dev/workflows/bootstrapOsspckgs.ts b/services/apps/packages_worker/src/deps-dev/workflows/bootstrapOsspckgs.ts
+index d3b7ca4b65..d185b4fc8d 100644
+--- a/services/apps/packages_worker/src/deps-dev/workflows/bootstrapOsspckgs.ts
++++ b/services/apps/packages_worker/src/deps-dev/workflows/bootstrapOsspckgs.ts
+@@ -1,10 +1,12 @@
+ import {
+   ApplicationFailure,
++  ChildWorkflowFailure,
+   executeChild,
+   proxyActivities,
+   workflowInfo,
+ } from '@temporalio/workflow'
+ 
++import { rankPackagesWorkflow } from '../../criticality/workflow'
+ import { ingestScorecard } from '../../scorecard/workflows'
+ import type * as depsDevActivities from '../activities'
+ 
+@@ -60,6 +62,7 @@ export async function bootstrapOsspckgs(opts: {
+   reuseExports?: boolean
+   depsTableOption?: 'A' | 'B'
+   exportName?: string
++  snapshotDate?: string // YYYY-MM-DD — override BQ snapshot resolution for all partition-filtered kinds
+ }): Promise<void> {
+   // B3: deterministic timestamps — workflowInfo().startTime is replay-stable; new Date() is not.
+   const start = workflowInfo().startTime
+@@ -93,7 +96,8 @@ export async function bootstrapOsspckgs(opts: {
+   // Full mode doesn't use the date in its BQ query (*Latest views, no partition filter)
+   // but the resolved date becomes the watermark for the next incremental run.
+   for (const kind of PARTITIONED_KINDS.filter((k) => runs(k))) {
+-    const { snapshotDate } = await resolveSnapshotDate({ jobKind: kind, today })
++    const snapshotDate =
++      opts.snapshotDate ?? (await resolveSnapshotDate({ jobKind: kind, today })).snapshotDate
+     resolvedSnapshots.set(kind, snapshotDate)
+   }
+ 
+@@ -102,7 +106,8 @@ export async function bootstrapOsspckgs(opts: {
+   for (const kind of SNAPSHOT_RESOLVED_KINDS) {
+     const shouldResolve = kind === 'repos' ? runs('repos') || runs('package_repos') : runs(kind)
+     if (!shouldResolve) continue
+-    const { snapshotDate } = await resolveSnapshotDate({ jobKind: kind, today })
++    const snapshotDate =
++      opts.snapshotDate ?? (await resolveSnapshotDate({ jobKind: kind, today })).snapshotDate
+     resolvedSnapshots.set(kind, snapshotDate)
+   }
+ 
+@@ -155,16 +160,26 @@ export async function bootstrapOsspckgs(opts: {
+     })
+   }
+   if (runs('dependent_counts')) {
+-    await executeChild(ingestDependentCounts, {
+-      args: [
+-        {
+-          runId,
+-          snapshotDate: snap('dependent_counts'),
+-          reuseExports: opts.reuseExports,
+-          exportName: opts.exportName,
+-        },
+-      ],
+-    })
++    try {
++      await executeChild(ingestDependentCounts, {
++        args: [
++          {
++            runId,
++            snapshotDate: snap('dependent_counts'),
++            reuseExports: opts.reuseExports,
++            exportName: opts.exportName,
++          },
++        ],
++      })
++    } catch (err) {
++      // Only soft-fail on the row-count guard. Child workflow failures are wrapped in
++      // ChildWorkflowFailure — unwrap to inspect the cause.
++      // All other errors (BQ timeout, DB failure, etc.) propagate normally.
++      const cause = err instanceof ChildWorkflowFailure ? err.cause : err
++      if (!(cause instanceof ApplicationFailure) || cause.type !== 'DEPENDENT_COUNTS_GUARD') {
++        throw err
++      }
++    }
+   }
+   if (runs('repos') || runs('package_repos')) {
+     await executeChild(ingestRepos, {
+@@ -230,4 +245,7 @@ export async function bootstrapOsspckgs(opts: {
+       args: [{ runId, reuseExports: opts.reuseExports, exportName: opts.exportName }],
+     })
+   }
++  if (runs('ranking')) {
++    await executeChild(rankPackagesWorkflow, { args: [] })
++  }
+ }
+diff --git a/services/apps/packages_worker/src/deps-dev/workflows/ingestDependentCounts.ts b/services/apps/packages_worker/src/deps-dev/workflows/ingestDependentCounts.ts
+index c4b3c6c26b..030ef45869 100644
+--- a/services/apps/packages_worker/src/deps-dev/workflows/ingestDependentCounts.ts
++++ b/services/apps/packages_worker/src/deps-dev/workflows/ingestDependentCounts.ts
+@@ -1,4 +1,4 @@
+-import { proxyActivities } from '@temporalio/workflow'
++import { ApplicationFailure, proxyActivities } from '@temporalio/workflow'
+ 
+ import type * as depsDevActivities from '../activities'
+ import { buildDependentCountsSql } from '../queries/dependentCountsSql'
+@@ -24,6 +24,11 @@ const { mergeStagingToTable } = proxyActivities<typeof depsDevActivities>({
+   retry: { maximumAttempts: 1 },
+ })
+ 
++const { checkDependentCountsGuard } = proxyActivities<typeof depsDevActivities>({
++  startToCloseTimeout: '1 minute',
++  retry: { maximumAttempts: 3 },
++})
++
+ const STAGING_TABLE = 'staging.osspckgs_dependent_counts_raw'
+ 
+ // Two-statement DDL: DROP before CREATE so an existing table with the old dependent_packages_count
+@@ -79,6 +84,19 @@ export async function ingestDependentCounts(opts: {
+ 
+   const { fileNames, rowCounts } = await listParquetFiles({ gcsPrefix: exportResult.gcsPrefix })
+   const totalFiles = fileNames.length
++  const totalRows = totalFiles > 0 ? rowCounts.reduce((a, b) => a + b, 0) : 0
++
++  const guard = await checkDependentCountsGuard({
++    currentRowCount: totalRows,
++    snapshotDate: opts.snapshotDate,
++  })
++  if (!guard.ok) {
++    throw ApplicationFailure.nonRetryable(
++      `dependent_counts guard failed: ${String(totalRows)} rows vs prev max ${String(guard.prevRowCount)} ` +
++        `(${((guard.dropPct ?? 0) * 100).toFixed(1)}% drop). Slack alert sent. Aborting to preserve existing data.`,
++      'DEPENDENT_COUNTS_GUARD',
++    )
++  }
+ 
+   if (totalFiles === 0) {
+     await mergeStagingToTable({
+@@ -90,7 +108,6 @@ export async function ingestDependentCounts(opts: {
+     return
+   }
+ 
+-  const totalRows = rowCounts.reduce((a, b) => a + b, 0)
+   const filesPerChunk =
+     totalRows > 0
+       ? Math.max(1, Math.round((ROWS_PER_CHUNK * fileNames.length) / totalRows))
+diff --git a/services/apps/packages_worker/src/scripts/monitorOsspckgs.ts b/services/apps/packages_worker/src/scripts/monitorOsspckgs.ts
+index 5faeacb10e..8df57a4622 100644
+--- a/services/apps/packages_worker/src/scripts/monitorOsspckgs.ts
++++ b/services/apps/packages_worker/src/scripts/monitorOsspckgs.ts
+@@ -231,6 +231,7 @@ const KIND_TABLES: Record<string, string[]> = {
+   advisories: ['advisories'],
+   advisory_packages: ['advisory_packages', 'advisory_affected_ranges'],
+   dependent_counts: ['packages'],
++  ranking: ['packages'],
+ }
+ 
+ const TABLE_ABBREV: Record<string, string> = {
+@@ -276,7 +277,7 @@ function extractEcosystem(job: any) {
+ // ── Layout ────────────────────────────────────────────────────────────────────
+ 
+ const COL = {
+-  id: 5,
++  id: 12,
+   kind: 20,
+   eco: 10,
+   status: 18,
+@@ -295,7 +296,7 @@ const COL = {
+ function tableHeader() {
+   const content =
+     ' ' +
+-    'ID'.padEnd(COL.id) +
++    'ID  STARTED'.padEnd(COL.id) +
+     'KIND'.padEnd(COL.kind) +
+     'ECO'.padEnd(COL.eco) +
+     'STATUS'.padEnd(COL.status) +
+@@ -389,10 +390,15 @@ function tableRow(job: any, selected: boolean) {
+     ? A.dim + '—' + A.reset
+     : fmtElapsed(job.started_at, job.finished_at)
+ 
++  const startedTime = job.started_at
++    ? new Date(job.started_at as string).toISOString().slice(11, 16)
++    : '—'
++  const idCell = `${String(job.id)} ${A.dim}${startedTime}${A.reset}${bg}`
++
+   return (
+     bg +
+     ' ' +
+-    String(job.id).padEnd(COL.id) +
++    padCell(idCell, COL.id, bg) +
+     A.bold +
+     truncate(job.job_kind, COL.kind - 1).padEnd(COL.kind) +
+     A.reset +
+@@ -421,7 +427,7 @@ function tableRow(job: any, selected: boolean) {
+ 
+ // eslint-disable-next-line @typescript-eslint/no-explicit-any
+ function renderDetail(job: any, cols: number) {
+-  const lines = []
++  const lines: string[] = []
+   const sep = A.dim + '─'.repeat(cols - 2) + A.reset
+ 
+   const snapshotDate = job.snapshot_at
+diff --git a/services/apps/packages_worker/src/scripts/triggerBootstrap.ts b/services/apps/packages_worker/src/scripts/triggerBootstrap.ts
+index cb738ba1d3..1732862d35 100644
+--- a/services/apps/packages_worker/src/scripts/triggerBootstrap.ts
++++ b/services/apps/packages_worker/src/scripts/triggerBootstrap.ts
+@@ -27,6 +27,9 @@ Options:
+                            ${VALID_KINDS.join(', ')}
+                          "repos" and "package_repos" always run together (one workflow).
+                          "advisories" and "advisory_packages" always run together (one workflow).
++  --snapshot-date DATE   Override BQ snapshot resolution for all partition-filtered kinds.
++                         Use YYYY-MM-DD. Skips resolveSnapshotDate BQ call and uses this date
++                         directly. Useful for re-running with a known-good older snapshot.
+   --reuse-exports        Skip BQ for any kind that has recent exported data in DB+GCS.
+                          Falls back to BQ if files are gone or no prior export exists.
+   --export-name <name>   Skip BQ entirely for kinds covered by a named export
+@@ -47,6 +50,7 @@ Examples:
+   pnpm trigger-bootstrap:local full CARGO --export-name cargo-may-2026 --deps-table-b
+   pnpm trigger-bootstrap:local full --kinds dependent_counts
+   pnpm trigger-bootstrap:local full --kinds packages,versions
++  pnpm trigger-bootstrap:local full --kinds dependent_counts --snapshot-date 2026-06-04
+ `
+ 
+ async function main(): Promise<void> {
+@@ -70,6 +74,20 @@ async function main(): Promise<void> {
+   }
+   const exportName = exportNameIdx !== -1 ? args[exportNameIdx + 1] : undefined
+ 
++  const snapshotDateIdx = args.indexOf('--snapshot-date')
++  if (
++    snapshotDateIdx !== -1 &&
++    (snapshotDateIdx + 1 >= args.length || args[snapshotDateIdx + 1].startsWith('--'))
++  ) {
++    console.error('--snapshot-date requires a value (YYYY-MM-DD)')
++    process.exit(1)
++  }
++  const snapshotDate = snapshotDateIdx !== -1 ? args[snapshotDateIdx + 1] : undefined
++  if (snapshotDate && !/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate)) {
++    console.error(`--snapshot-date must be YYYY-MM-DD, got: ${snapshotDate}`)
++    process.exit(1)
++  }
++
+   const kindsIdx = args.indexOf('--kinds')
+   if (kindsIdx !== -1 && (kindsIdx + 1 >= args.length || args[kindsIdx + 1].startsWith('--'))) {
+     console.error('--kinds requires a value')
+@@ -88,7 +106,7 @@ async function main(): Promise<void> {
+   const positional: string[] = []
+   for (let i = 0; i < args.length; i++) {
+     if (args[i].startsWith('--')) {
+-      if (args[i] === '--export-name' || args[i] === '--kinds') i++ // skip value
++      if (args[i] === '--export-name' || args[i] === '--kinds' || args[i] === '--snapshot-date') i++ // skip value
+       continue
+     }
+     positional.push(args[i])
+@@ -130,11 +148,12 @@ async function main(): Promise<void> {
+   const handle = await client.workflow.start(bootstrapOsspckgs, {
+     taskQueue: 'bq-dataset-ingest',
+     workflowId,
+-    args: [{ mode, ecosystems, kinds, reuseExports, depsTableOption, exportName }],
++    args: [{ mode, ecosystems, kinds, reuseExports, depsTableOption, exportName, snapshotDate }],
+   })
+ 
+   const flags = [
+     kinds ? `--kinds ${kinds.join(',')}` : '',
++    snapshotDate ? `--snapshot-date ${snapshotDate}` : '',
+     reuseExports ? '--reuse-exports' : '',
+     depsTableOption === 'B' ? '--deps-table-b' : '',
+     exportName ? `--export-name ${exportName}` : '',
+diff --git a/services/apps/packages_worker/src/workflows/index.ts b/services/apps/packages_worker/src/workflows/index.ts
+index d48e7ab97e..3e4e1b8113 100644
+--- a/services/apps/packages_worker/src/workflows/index.ts
++++ b/services/apps/packages_worker/src/workflows/index.ts
+@@ -17,3 +17,4 @@ export {
+ export { osvSync } from '../osv/workflows'
+ export { mavenCriticalWorkflow, mavenNonCriticalWorkflow } from '../maven/workflows'
+ export { ingestScorecard } from '../scorecard/workflows'
++export { rankPackagesWorkflow } from '../criticality/workflow'
+diff --git a/services/libs/data-access-layer/src/osspckgs/ingestJobs.ts b/services/libs/data-access-layer/src/osspckgs/ingestJobs.ts
+index 3ff7e4fef4..ad7305cc3b 100644
+--- a/services/libs/data-access-layer/src/osspckgs/ingestJobs.ts
++++ b/services/libs/data-access-layer/src/osspckgs/ingestJobs.ts
+@@ -11,6 +11,7 @@ export type OsspckgsJobKind =
+   | 'dependent_counts'
+   | 'scorecard_repos'
+   | 'scorecard_checks'
++  | 'ranking'
+ 
+ export type OsspckgsJobStatus =
+   | 'pending'
+@@ -22,7 +23,7 @@ export type OsspckgsJobStatus =
+   | 'failed'
+   | 'cleaned'
+ 
+-export type OsspckgsSyncMode = 'full' | 'incremental'
++export type OsspckgsSyncMode = 'full' | 'incremental' | 'ranking'
+ 
+ export interface BqStats {
+   jobId: string
+@@ -185,6 +186,31 @@ export async function updateLoadingProgress(
+   )
+ }
+ 
++// Returns the MAX row_count_bq across the last 5 completed jobs for this kind.
++// Using MAX over recent jobs rather than the latest single job means one anomalous
++// run (e.g. a bad upstream snapshot) cannot corrupt the baseline for the next guard check.
++export async function getLastCompletedJobRowCount(
++  qx: QueryExecutor,
++  jobKind: OsspckgsJobKind,
++): Promise<number | null> {
++  const row = await qx.selectOneOrNone(
++    `
++    SELECT MAX(row_count_bq) AS row_count_bq
++    FROM (
++      SELECT row_count_bq
++      FROM osspckgs_ingest_jobs
++      WHERE job_kind = $(jobKind)
++        AND status IN ('done', 'cleaned')
++        AND row_count_bq IS NOT NULL
++      ORDER BY id DESC
++      LIMIT 5
++    ) recent
++    `,
++    { jobKind },
++  )
++  return row?.row_count_bq != null ? Number(row.row_count_bq) : null
++}
++
+ // Inserts a new job row with status 'pending', returns the new id.
+ // provisionalSnapshotAt is the expected snapshot date; promoted to snapshot_at
+ // unconditionally when the job reaches 'done' — including quiet incremental windows

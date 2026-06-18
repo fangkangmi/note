@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LBG · Agent Skills for Code Review</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.css" id="theme">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --green:#00865A; --green-dark:#00382a; --ink:#16241f; --muted:#5d6f68;
+    --line:#dfe7e3; --bg-soft:#f4f8f6;
+  }
+  .reveal{ font-family:'Inter',system-ui,-apple-system,sans-serif; color:var(--ink); font-size:30px; }
+  .reveal h1,.reveal h2,.reveal h3{ font-family:'Inter'; font-weight:800; color:var(--green-dark);
+    text-transform:none; letter-spacing:-0.02em; line-height:1.1; }
+  .reveal h1{ font-size:2.0em; } .reveal h2{ font-size:1.5em; } .reveal h3{ font-size:1.15em; }
+  .reveal .slides section{ text-align:left; }
+  .reveal p,.reveal li{ line-height:1.35; }
+  .reveal strong{ color:var(--green-dark); }
+  .accent{ color:var(--green); }
+  .kicker{ display:inline-block; font-size:0.5em; font-weight:800; letter-spacing:0.14em;
+    text-transform:uppercase; color:var(--green); border-bottom:3px solid var(--green);
+    padding-bottom:.15em; margin-bottom:.6em; }
+  .big{ font-size:1.25em; font-weight:800; color:var(--green-dark); }
+  .muted{ color:var(--muted); }
+  .reveal ul{ margin-left:1em; } .reveal li{ margin:.35em 0; }
+  /* dark emphasis slides */
+  .reveal section.dark{ color:#eafaf3; }
+  .reveal section.dark h1,.reveal section.dark h2,.reveal section.dark h3{ color:#fff; }
+  .reveal section.dark strong{ color:#7fe3bf; }
+  .reveal section.dark .kicker{ color:#7fe3bf; border-color:#7fe3bf; }
+  .reveal section.dark .muted{ color:#a9c6bb; }
+  /* pills / chain */
+  .chain{ display:flex; align-items:center; gap:.5em; flex-wrap:wrap; margin:.6em 0; font-size:.7em; }
+  .node{ background:var(--bg-soft); border:1px solid var(--line); border-radius:999px;
+    padding:.35em .8em; font-weight:600; }
+  .node.hot{ background:var(--green); color:#fff; border-color:var(--green); }
+  .arrow{ color:var(--green); font-weight:800; }
+  section.dark .node{ background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.25); color:#eafaf3; }
+  /* scorecard table */
+  .reveal table.score{ font-size:.62em; border-collapse:collapse; width:100%; }
+  .reveal table.score th,.reveal table.score td{ border:1px solid var(--line); padding:.5em .6em; text-align:left; }
+  .reveal table.score thead th{ background:var(--green-dark); color:#fff; }
+  .reveal table.score tr.win td{ background:#eafaf3; font-weight:600; }
+  .yes{ color:var(--green); font-weight:800; } .no{ color:#c0392b; font-weight:800; }
+  /* agenda */
+  .agenda{ font-size:.66em; } .agenda td{ padding:.28em .6em; border-bottom:1px solid var(--line); }
+  .agenda .t{ color:var(--green); font-weight:800; width:3.2em; }
+  /* screenshot placeholder */
+  .shot{ border:2px dashed var(--green); border-radius:12px; background:var(--bg-soft);
+    padding:1.1em; text-align:center; color:var(--muted); font-weight:600; font-size:.7em; }
+  section.dark .shot{ background:rgba(255,255,255,.06); color:#a9c6bb; }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:1em; }
+  .card{ background:var(--bg-soft); border:1px solid var(--line); border-radius:12px; padding:.7em .9em; font-size:.8em; }
+  .card h3{ margin:.1em 0 .3em; font-size:1em; }
+  .reveal pre{ width:100%; box-shadow:none; font-size:.5em; }
+  .reveal pre code{ border-radius:10px; padding:1em; max-height:520px; }
+  .footer{ position:fixed; bottom:12px; left:18px; font-size:13px; color:var(--muted);
+    font-family:'Inter'; z-index:30; letter-spacing:.02em; }
+  .timer{ font-size:2.2em; font-weight:800; color:var(--green); }
+  .tag{ display:inline-block; background:var(--green); color:#fff; border-radius:6px;
+    padding:.08em .5em; font-size:.6em; font-weight:700; vertical-align:middle; }
+</style>
+</head>
+<body>
+<div class="footer">LBG Engineering · Agent Skills for Code Review · APIE Standard</div>
+<div class="reveal"><div class="slides">
+
+<!-- 1 TITLE -->
+<section class="dark" data-background-color="#00382a">
+  <span class="kicker">LBG Engineering · Workshop</span>
+  <h1>Agent Skills for<br>Code Review</h1>
+  <p class="big" style="color:#7fe3bf">Auto-checking OpenAPI PRs against the LBG APIE standard</p>
+  <p class="muted">90 minutes · [date] · [facilitator]</p>
+  <aside class="notes">
+    Welcome. Goal of today: decide together whether skill-based review is worth adopting for APIE
+    compliance. By the end you'll have seen it beat a manual review on the exact task you do every week.
+    Housekeeping: laptops out but closed until the hands-on. Press S any time to see my notes (for you when you re-present).
+  </aside>
+</section>
+
+<!-- 2 HOOK -->
+<section>
+  <span class="kicker">The problem</span>
+  <h2>Reviewing a spec against APIE is manual toil</h2>
+  <ul>
+    <li class="fragment">Open the PR. Open the APIE standard.</li>
+    <li class="fragment">Scroll. Compare clause by clause. By hand.</li>
+    <li class="fragment">Hope you didn't miss one.</li>
+    <li class="fragment">Every reviewer does it slightly differently.</li>
+  </ul>
+  <p class="fragment big" style="margin-top:.6em">What if the standard checked itself?</p>
+  <aside class="notes">
+    Ask the room: "Honestly, how long does a proper APIE review of an OpenAPI PR take you?" Take 2-3 answers.
+    Then: "Hands up if you're confident you catch every violation, every time." Few hands — that's the hook.
+  </aside>
+</section>
+
+<!-- 3 AGENDA -->
+<section>
+  <span class="kicker">Today · 90 minutes</span>
+  <h2>How this runs</h2>
+  <table class="agenda">
+    <tr><td class="t">12'</td><td><strong>You review it first</strong> — find the APIE violations by hand (timed)</td></tr>
+    <tr><td class="t">6'</td><td>Debrief — what did we find, how long did it take</td></tr>
+    <tr><td class="t">10'</td><td>AI review <strong>without</strong> the skill</td></tr>
+    <tr><td class="t">15'</td><td>AI review <strong>with</strong> the APIE skill <span class="tag">the moment</span></td></tr>
+    <tr><td class="t">20'</td><td>Your turn — hands-on, in groups</td></tr>
+    <tr><td class="t">15'</td><td>Where this goes — <strong>@lbg-reviewer</strong> &amp; discussion</td></tr>
+    <tr><td class="t">7'</td><td>Wrap &amp; next steps</td></tr>
+  </table>
+  <aside class="notes">Keep us honest on time — the contrast (human vs no-skill vs skill) is the payload; protect it.</aside>
+</section>
+
+<!-- 4 SETUP -->
+<section>
+  <span class="kicker">What we already have</span>
+  <h2>Two skills, living in <code>.github/</code></h2>
+  <div class="grid2">
+    <div class="card"><h3>📐 APIE standard skill</h3>The LBG API standard, encoded once — the rules an agent checks a spec against.</div>
+    <div class="card"><h3>🔍 code-review skill</h3>Detects what changed in the PR and routes the right files to the right standard.</div>
+  </div>
+  <p style="margin-top:.5em">Copilot uses them automatically. The chain:</p>
+  <div class="chain">
+    <span class="node">OpenAPI PR diff</span><span class="arrow">→</span>
+    <span class="node">code-review skill</span><span class="arrow">→</span>
+    <span class="node hot">APIE standard skill</span><span class="arrow">→</span>
+    <span class="node">findings + clause citations</span>
+  </div>
+  <aside class="notes">
+    Stress: nothing exotic — both skills are plain files in .github/, already wired into Copilot.
+    The code-review skill's job is detection + routing; the APIE skill holds the standard.
+  </aside>
+</section>
+
+<!-- 5 EXERCISE -->
+<section data-background-color="#f4f8f6">
+  <span class="kicker">Exercise · 10 min on the clock</span>
+  <h2>You're the reviewer</h2>
+  <ul>
+    <li>Open the PR: <strong>[PR link]</strong></li>
+    <li>Open the standard: <strong>[APIE doc link]</strong></li>
+    <li>Find <em>every</em> APIE violation. Write each one down: <strong>[capture link]</strong></li>
+    <li>No AI yet. 🙂</li>
+  </ul>
+  <p class="timer">⏱ 10:00</p>
+  <aside class="notes">
+    Start the timer. Hand out the three links. Walk the room. Note who reaches for the standard doc vs reviews from memory.
+    This toil is the baseline we're about to beat.
+  </aside>
+</section>
+
+<!-- 6 THE PR -->
+<section>
+  <span class="kicker">The change under review</span>
+  <h2>Looks small. Is it compliant?</h2>
+<pre><code class="language-diff" data-trim data-noescape>
+   paths:
++    /Accounts:
++      post:
++        summary: Create account
++        responses:
++          '200':
++            description: OK
++            content:
++              application/json:
++                schema:
++                  type: object
++                  properties:
++                    AccountID: { type: string }
+</code></pre>
+  <p class="muted">[swap in your real diff — keep the subtle violations]</p>
+  <aside class="notes">
+    Don't reveal the violations yet. (Examples this snippet hides: path not lowercase/kebab-case,
+    no operationId, create should be 201 not 200, no 4xx error responses using the standard Error schema,
+    inline schema instead of a $ref component, property casing.) Replace with your actual APIE rules.
+  </aside>
+</section>
+
+<!-- 7 DEBRIEF -->
+<section>
+  <span class="kicker">Debrief</span>
+  <h2>What did the room find?</h2>
+  <div class="grid2" style="align-items:center">
+    <div>
+      <ul style="font-size:.82em">
+        <li>Avg time spent: <strong>[__ min]</strong></li>
+        <li>Found the headline violation: <strong>[__ %]</strong></li>
+        <li>Most-missed: <strong>[____]</strong></li>
+      </ul>
+      <p class="fragment big" style="font-size:1em">The gap is the point.</p>
+    </div>
+    <div>
+      <canvas id="chartDebrief" data-chart height="230"></canvas>
+      <p class="muted" style="font-size:.46em;text-align:center;margin-top:.2em">edit numbers in the script at the foot of the file</p>
+    </div>
+  </div>
+  <aside class="notes">Fill the numbers live from the capture sheet. The bar gap — violations present vs found by humans vs found by the skill — is your whole argument. Set the two values in the chart script at the bottom of the HTML to match your real PR + room.</aside>
+</section>
+
+<!-- 8 BET -->
+<section class="dark" data-background-color="#00382a">
+  <span class="kicker">Place your bet</span>
+  <h2>Will AI with <span class="accent">no</span> skill catch the APIE violation?</h2>
+  <p class="big" style="color:#7fe3bf">👍 Yes &nbsp;&nbsp; / &nbsp;&nbsp; 👎 No</p>
+  <p class="muted">Hands up. Remember your vote.</p>
+  <aside class="notes">Quick show of hands; count roughly. Sets up the reveal and keeps them engaged.</aside>
+</section>
+
+<!-- 9 NO SKILL -->
+<section>
+  <span class="kicker">AI · without the skill</span>
+  <h2>Generic review</h2>
+  <div class="shot">[ paste screenshot: Copilot review with NO skill ]</div>
+  <ul style="margin-top:.5em">
+    <li class="fragment">Comments on style / naming — generically.</li>
+    <li class="fragment"><strong>Doesn't know the APIE standard.</strong> No clause. Misses the org-specific rule.</li>
+  </ul>
+  <p class="fragment big">AI alone doesn't know <em>your</em> standard.</p>
+  <aside class="notes">Run live or play the recording. Land the line: capable model, but it has never read APIE.</aside>
+</section>
+
+<!-- 10 WITH SKILL -->
+<section class="dark" data-background-color="#00513C">
+  <span class="kicker">AI · with the APIE skill</span>
+  <h2>It checks itself</h2>
+  <div class="chain">
+    <span class="node">PR diff</span><span class="arrow">→</span>
+    <span class="node">code-review</span><span class="arrow">→</span>
+    <span class="node hot">APIE skill</span><span class="arrow">→</span>
+    <span class="node">violation + <strong>clause</strong> + fix</span>
+  </div>
+  <div class="shot">[ paste screenshot: review citing APIE §x.x with suggested fix ]</div>
+  <p class="fragment big" style="color:#7fe3bf">Seconds. Every violation. Cites the exact clause.</p>
+  <aside class="notes">
+    THE MOMENT — slow down. Point at the citation. Re-ask the bet: "who voted it would catch it?"
+    Emphasise the clause reference: that's the bit a human did from memory, now traceable.
+    Caveat: the clause citation is usually present but model-dependent — if it doesn't print the clause id this run, narrate it from the standard.
+  </aside>
+</section>
+
+<!-- 11 SCORECARD -->
+<section>
+  <span class="kicker">Side by side</span>
+  <h2>The contrast</h2>
+  <table class="score">
+    <thead><tr><th></th><th>Time</th><th>Caught APIE violation</th><th>Cited the clause</th><th>Same every time</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Human (manual)</strong></td><td>~10 min</td><td>some did</td><td>from memory</td><td>varies by person</td></tr>
+      <tr><td><strong>AI · no skill</strong></td><td>seconds</td><td class="no">✗</td><td class="no">✗</td><td>generic</td></tr>
+      <tr class="win"><td><strong>AI · APIE skill</strong></td><td>seconds</td><td class="yes">✓</td><td class="yes">✓ clause + fix</td><td class="yes">✓ identical</td></tr>
+    </tbody>
+  </table>
+  <aside class="notes">This table is the buy-in. Leave it up while you talk through "why it matters."</aside>
+</section>
+
+<!-- 11b BIG NUMBER -->
+<section class="dark" data-background-color="#00513C" data-transition="fade">
+  <span class="kicker">The difference</span>
+  <h2 style="font-size:1.15em">Manual review → skill review</h2>
+  <p style="font-size:3.0em;font-weight:800;color:#fff;margin:.15em 0">~10 min <span class="accent">→</span> ~10 sec</p>
+  <p class="big" style="color:#7fe3bf">Same standard. Every PR. With the clause cited.</p>
+  <aside class="notes">A breath. The headline number. Let it sit for a beat before moving into "why it matters for LBG."</aside>
+</section>
+
+<!-- 12 WHY LBG -->
+<section>
+  <span class="kicker">Why this matters at LBG</span>
+  <h2>Not "cool AI" — governance</h2>
+  <div class="grid2">
+    <div class="card"><h3>🧾 Auditability</h3>Cites the exact APIE clause → traceable, defensible review.</div>
+    <div class="card"><h3>🔁 Consistency</h3>Same standard applied identically, every team, every PR.</div>
+    <div class="card"><h3>🧠 Reviewer load</h3>Humans focus on logic &amp; risk, not clause-matching.</div>
+    <div class="card"><h3>⚡ Speed</h3>Seconds, not minutes — faster PRs, less back-and-forth.</div>
+  </div>
+  <aside class="notes">This is the language leadership buys. Auditability first — it's a bank.</aside>
+</section>
+
+<!-- 13 TWO LENSES (validated) -->
+<section data-background-color="#f4f8f6">
+  <span class="kicker">The real finding · pass@k validated</span>
+  <h2>Run it <em>with</em> and <em>without</em> the skill</h2>
+  <div class="grid2">
+    <div class="card"><h3 class="accent">With the skill</h3>Deep on APIE — cites clauses, catches standard violations a plain model can't know. But it <strong>narrows the model's view</strong> to the standard.</div>
+    <div class="card"><h3 class="accent">Without the skill</h3>Broader, unfocused — catches general issues <em>outside</em> APIE that the skill's narrow lens skips over.</div>
+  </div>
+  <p class="big" style="margin-top:.3em">Both outputs are valuable. Use both lenses.</p>
+  <aside class="notes">
+    This is the honest, validated core message. We ran pass@k (k repeats): the skill reliably ADDS APIE depth
+    AND reliably tunnels the model's attention to the standard, missing some general issues the no-skill run catches.
+    That's exactly WHY we show both today: skill = depth on your standard, no-skill = breadth. Keep a human approver over both.
+  </aside>
+</section>
+
+<!-- 14 HANDS-ON -->
+<section data-background-color="#00382a" class="dark">
+  <span class="kicker">Your turn · 20 min</span>
+  <h2>Run it yourselves</h2>
+  <ul>
+    <li>Groups of <strong>[4-5]</strong>. Sandbox PR: <strong>[link]</strong></li>
+    <li>Trigger the review (with the skill). Watch it cite APIE.</li>
+    <li>Try to <em>fool</em> it — add a violation, see if it catches it.</li>
+    <li>Note: one thing it nailed, one thing it missed.</li>
+  </ul>
+  <aside class="notes">Facilitators roam. Collect the "missed" notes — they feed the skill and the rollout pitch.</aside>
+</section>
+
+<!-- 15 REMOTE AGENT -->
+<section class="dark" data-background-color="#00513C">
+  <span class="kicker">Where this goes</span>
+  <h2>Meet <span class="accent">@lbg-reviewer</span></h2>
+  <ul>
+    <li><strong>Today:</strong> on-demand in Copilot, at your desk.</li>
+    <li><strong>Now (PoC):</strong> comment <strong>@lbg-reviewer</strong> on any GitHub PR → it runs the APIE review inline.</li>
+    <li><strong>Next:</strong> automatic on every spec PR. Conversations underway at management level.</li>
+  </ul>
+  <p class="fragment big" style="color:#7fe3bf">▶ Live demo</p>
+  <aside class="notes">Do the LIVE demo here — comment @lbg-reviewer on a real PR and let it post the APIE review inline. Be honest it's a PoC; the point is direction: same skills, now a teammate on every PR.</aside>
+</section>
+
+<!-- 16 DISCUSSION -->
+<section>
+  <span class="kicker">Let's decide together</span>
+  <h2>Open questions for @lbg-reviewer</h2>
+  <ul>
+    <li>Advisory comment, or <strong>block the merge</strong>?</li>
+    <li>Who signs off for audit — the bot, or a human approver?</li>
+    <li>How do we keep the APIE skill <strong>in sync</strong> as the standard evolves?</li>
+    <li>Which repos / which standards next?</li>
+  </ul>
+  <aside class="notes">Capture answers — this is genuinely useful input for the management track. Assign an owner to each.</aside>
+</section>
+
+<!-- 17 CTA -->
+<section>
+  <span class="kicker">Next steps</span>
+  <h2>This week</h2>
+  <ul>
+    <li>Run the skill on your next OpenAPI PR.</li>
+    <li>Send us anything it <strong>missed or over-flagged</strong> → it makes the skill better.</li>
+    <li><strong>[owner]</strong> is collating feedback for the @lbg-reviewer rollout.</li>
+  </ul>
+  <aside class="notes">Concrete, small, this-week asks. End with the owner + where to send feedback.</aside>
+</section>
+
+<!-- 18 THANKS -->
+<section class="dark" data-background-color="#00382a">
+  <h1>Thank you</h1>
+  <p class="big" style="color:#7fe3bf">Questions?</p>
+  <p class="muted">[facilitator] · [contact] · skills repo: [.github link]</p>
+  <aside class="notes">Leave the scorecard slide as the takeaway if Q&A runs long.</aside>
+</section>
+
+</div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  /* ===== EDIT YOUR DEBRIEF NUMBERS HERE ===== */
+  const VIOLATIONS_PRESENT = 6;   // how many APIE violations the PR actually contains
+  const FOUND_BY_HUMANS    = 3;   // avg the room found (fill in after the exercise)
+  /* ========================================== */
+  const _charts = {};
+  function initCharts(){
+    const cv = document.querySelector('section.present #chartDebrief');
+    if(cv && !_charts.debrief){
+      _charts.debrief = new Chart(cv, {
+        type:'bar',
+        data:{ labels:['Present in PR','Found by humans','Found by skill'],
+          datasets:[{ data:[VIOLATIONS_PRESENT, FOUND_BY_HUMANS, VIOLATIONS_PRESENT],
+            backgroundColor:['#9fb4ab','#c0392b','#00865A'], borderRadius:6 }] },
+        options:{ plugins:{legend:{display:false}},
+          scales:{ y:{ beginAtZero:true, ticks:{precision:0}, grid:{color:'#eef3f1'} }, x:{ grid:{display:false} } },
+          animation:{duration:900} }
+      });
+    }
+  }
+  Reveal.initialize({
+    hash:true, slideNumber:'c/t', transition:'slide', controls:true, progress:true,
+    plugins:[ RevealNotes, RevealHighlight ]
+  });
+  Reveal.on('ready', initCharts);
+  Reveal.on('slidechanged', initCharts);
+</script>
+</body>
+</html>

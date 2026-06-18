@@ -1,0 +1,155 @@
+diff --git a/services/libs/tinybird/datasources/advisories.datasource b/services/libs/tinybird/datasources/advisories.datasource
+index d3cd459e91..0a615796b0 100644
+--- a/services/libs/tinybird/datasources/advisories.datasource
++++ b/services/libs/tinybird/datasources/advisories.datasource
+@@ -24,7 +24,7 @@ SCHEMA >
+     `sourceUrl` String `json:$.record.source_url` DEFAULT '',
+     `aliases` Array(String) `json:$.record.aliases[:]` DEFAULT [],
+     `severity` String `json:$.record.severity` DEFAULT '',
+-    `cvss` Float32 `json:$.record.cvss` DEFAULT 0,
++    `cvss` String `json:$.record.cvss` DEFAULT '0',
+     `cvssSource` String `json:$.record.cvss_source` DEFAULT '',
+     `isCritical` UInt8 `json:$.record.is_critical` DEFAULT 0,
+     `summary` String `json:$.record.summary` DEFAULT '',
+diff --git a/services/libs/tinybird/datasources/packages.datasource b/services/libs/tinybird/datasources/ossPackages.datasource
+similarity index 68%
+rename from services/libs/tinybird/datasources/packages.datasource
+rename to services/libs/tinybird/datasources/ossPackages.datasource
+index c5cd5e9b51..2235190e66 100644
+--- a/services/libs/tinybird/datasources/packages.datasource
++++ b/services/libs/tinybird/datasources/ossPackages.datasource
+@@ -1,5 +1,5 @@
+ DESCRIPTION >
+-    - `packages` contains Tier-2 package metadata for tracked OSS packages across multiple ecosystems.
++    - `ossPackages` contains Tier-2 package metadata for tracked OSS packages across multiple ecosystems.
+     - Replicated from Postgres packages-db — seeded from deps.dev BigQuery, enriched by registry-specific workers (npm, Maven, etc.).
+     - Used to power package search, vulnerability overlays, criticality scoring, and ecosystem health analytics.
+     - `id` is the internal primary key.
+@@ -28,6 +28,9 @@ DESCRIPTION >
+     - `impact` is the composite criticality impact score from the ranking function (0 if not yet ranked).
+     - `isCritical` is 1 if this package ranks in the top N by ecosystem in the most recent ranking pass, 0 otherwise.
+     - `lastRankPassAt` is when the criticality ranking worker last processed this package (NULL if never ranked).
++    - `downloadsLast30d` is the 30-day npm download count cached for ranking (0 if not yet populated).
++    - `centralityScore` is the PageRank-based centrality score stored for future ranking formula use ('0' if not yet computed).
++    - `rankInEcosystem` is the ordinal rank within the ecosystem from the most recent ranking pass (NULL if not yet ranked).
+     - `ingestionSource` identifies which worker last wrote the row: 'npm-registry', 'deps_dev', etc. (empty string if unknown).
+     - `lastSyncedAt` is when the row was last written by any worker — serves as the updated_at watermark for sync.
+     - `createdAt` is the row-insert timestamp — set once on first insert, never updated.
+@@ -36,32 +39,35 @@ SCHEMA >
+     `id` UInt64 `json:$.record.id`,
+     `purl` String `json:$.record.purl`,
+     `ecosystem` String `json:$.record.ecosystem`,
+-    `namespace` String `json:$.record.namespace` DEFAULT '',
++    `namespace` Nullable(String) `json:$.record.namespace`,
+     `name` String `json:$.record.name`,
+-    `registryUrl` String `json:$.record.registry_url` DEFAULT '',
+-    `status` String `json:$.record.status` DEFAULT '',
+-    `description` String `json:$.record.description` DEFAULT '',
+-    `homepage` String `json:$.record.homepage` DEFAULT '',
+-    `declaredRepositoryUrl` String `json:$.record.declared_repository_url` DEFAULT '',
+-    `repositoryUrl` String `json:$.record.repository_url` DEFAULT '',
++    `registryUrl` Nullable(String) `json:$.record.registry_url`,
++    `status` Nullable(String) `json:$.record.status`,
++    `description` Nullable(String) `json:$.record.description`,
++    `homepage` Nullable(String) `json:$.record.homepage`,
++    `declaredRepositoryUrl` Nullable(String) `json:$.record.declared_repository_url`,
++    `repositoryUrl` Nullable(String) `json:$.record.repository_url`,
+     `licenses` Array(String) `json:$.record.licenses[:]` DEFAULT [],
+-    `licensesRaw` String `json:$.record.licenses_raw` DEFAULT '',
++    `licensesRaw` Nullable(String) `json:$.record.licenses_raw`,
+     `keywords` Array(String) `json:$.record.keywords[:]` DEFAULT [],
+-    `distTagsLatest` String `json:$.record.dist_tags_latest` DEFAULT '',
+-    `distTagsNext` String `json:$.record.dist_tags_next` DEFAULT '',
+-    `distTagsBeta` String `json:$.record.dist_tags_beta` DEFAULT '',
+-    `versionsCount` UInt32 `json:$.record.versions_count` DEFAULT 0,
+-    `latestVersion` String `json:$.record.latest_version` DEFAULT '',
++    `distTagsLatest` Nullable(String) `json:$.record.dist_tags_latest`,
++    `distTagsNext` Nullable(String) `json:$.record.dist_tags_next`,
++    `distTagsBeta` Nullable(String) `json:$.record.dist_tags_beta`,
++    `versionsCount` Nullable(UInt32) `json:$.record.versions_count`,
++    `latestVersion` Nullable(String) `json:$.record.latest_version`,
+     `firstReleaseAt` Nullable(DateTime64(3)) `json:$.record.first_release_at`,
+     `latestReleaseAt` Nullable(DateTime64(3)) `json:$.record.latest_release_at`,
+-    `dependentCount` UInt32 `json:$.record.dependent_count` DEFAULT 0,
+-    `transitiveDependentCount` UInt64 `json:$.record.transitive_dependent_count` DEFAULT 0,
+-    `dependentReposCount` UInt32 `json:$.record.dependent_repos_count` DEFAULT 0,
++    `dependentCount` Nullable(UInt32) `json:$.record.dependent_count`,
++    `transitiveDependentCount` Nullable(UInt64) `json:$.record.transitive_dependent_count`,
++    `dependentReposCount` Nullable(UInt32) `json:$.record.dependent_repos_count`,
+     `hasCriticalVulnerability` UInt8 `json:$.record.has_critical_vulnerability` DEFAULT 0,
+-    `impact` Float32 `json:$.record.impact` DEFAULT 0,
++    `impact` Nullable(String) `json:$.record.impact`,
+     `isCritical` UInt8 `json:$.record.is_critical` DEFAULT 0,
+     `lastRankPassAt` Nullable(DateTime64(3)) `json:$.record.last_rank_pass_at`,
+-    `ingestionSource` String `json:$.record.ingestion_source` DEFAULT '',
++    `downloadsLast30d` Nullable(UInt64) `json:$.record.downloads_last_30d`,
++    `centralityScore` Nullable(String) `json:$.record.centrality_score`,
++    `rankInEcosystem` Nullable(UInt32) `json:$.record.rank_in_ecosystem`,
++    `ingestionSource` Nullable(String) `json:$.record.ingestion_source`,
+     `lastSyncedAt` DateTime64(3) `json:$.record.last_synced_at`,
+     `createdAt` DateTime64(3) `json:$.record.created_at`
+ 
+diff --git a/services/libs/tinybird/datasources/packageRepos.datasource b/services/libs/tinybird/datasources/packageRepos.datasource
+index 80316c3c6b..fb1b63dab6 100644
+--- a/services/libs/tinybird/datasources/packageRepos.datasource
++++ b/services/libs/tinybird/datasources/packageRepos.datasource
+@@ -15,7 +15,7 @@ SCHEMA >
+     `packageId` UInt64 `json:$.record.package_id`,
+     `repoId` UInt64 `json:$.record.repo_id`,
+     `source` String `json:$.record.source`,
+-    `confidence` Float32 `json:$.record.confidence`,
++    `confidence` String `json:$.record.confidence`,
+     `verifiedAt` DateTime64(3) `json:$.record.verified_at`,
+     `createdAt` DateTime64(3) `json:$.record.created_at`
+ 
+diff --git a/services/libs/tinybird/datasources/repos.datasource b/services/libs/tinybird/datasources/repos.datasource
+index 2d38863312..4b7abba3d2 100644
+--- a/services/libs/tinybird/datasources/repos.datasource
++++ b/services/libs/tinybird/datasources/repos.datasource
+@@ -18,7 +18,7 @@ DESCRIPTION >
+     - `archived` is 1 if the repository is archived, 0 if not, NULL until the GitHub enricher runs (deps.dev seed does not expose this).
+     - `disabled` is 1 if the repository is disabled, 0 if not, NULL until the GitHub enricher runs.
+     - `isFork` is 1 if this repository is a fork of another, 0 if not, NULL until the GitHub enricher runs.
+-    - `createdAt` is the repository creation date on GitHub/GitLab — a domain timestamp, not a row-insert timestamp.
++    - `createdAt` is the row-insert timestamp — set once on first insert via DEFAULT NOW(), never updated.
+     - `homepage` is the project homepage URL (empty string if not provided).
+     - `rawProjectType` is the deps.dev project type string (e.g. 'GITHUB', 'GITLAB') for identity resolution.
+     - `rawProjectName` is the deps.dev project name (e.g. 'github.com/owner/repo') for identity resolution.
+@@ -26,6 +26,13 @@ DESCRIPTION >
+     - `scorecardLastRunAt` is when the Scorecard was last evaluated (NULL if never run).
+     - `skipEnrichment` is 1 if the GitHub enricher should skip this repo (e.g. invalid/transient URLs), 0 otherwise.
+     - `lastSyncedAt` is the timestamp of the last GitHub enrichment attempt (NULL if never enriched or transient failure).
++    - `securityPolicyEnabled` is 1 if the repo has a SECURITY.md policy file, 0 if not, NULL until the snapshot enricher runs.
++    - `securityFileEnabled` is 1 if the repo has a security-related file, 0 if not, NULL until the snapshot enricher runs.
++    - `snapshotAt` is when the activity snapshot enricher last processed this repo (NULL if never run).
++    - `branchProtectionEnabled` is 1 if branch protection is enabled on the default branch, 0 if not, NULL until enriched.
++    - `branchProtectionAllowsForcePush` is 1 if force pushes are allowed despite branch protection, 0 if not, NULL until enriched.
++    - `branchProtectionRequiredReviews` is the number of required approving reviews before merging (NULL until enriched).
++    - `branchProtectionRequiresStatusChecks` is 1 if status checks are required before merging, 0 if not, NULL until enriched.
+     - `updatedAt` is the row-level audit timestamp used as the Tinybird watermark for sync.
+ 
+ SCHEMA >
+@@ -45,14 +52,21 @@ SCHEMA >
+     `archived` Nullable(UInt8) `json:$.record.archived`,
+     `disabled` Nullable(UInt8) `json:$.record.disabled`,
+     `isFork` Nullable(UInt8) `json:$.record.is_fork`,
+-    `createdAt` Nullable(DateTime64(3)) `json:$.record.created_at`,
++    `createdAt` DateTime64(3) `json:$.record.created_at`,
+     `homepage` String `json:$.record.homepage` DEFAULT '',
+     `rawProjectType` String `json:$.record.raw_project_type` DEFAULT '',
+     `rawProjectName` String `json:$.record.raw_project_name` DEFAULT '',
+-    `scorecardScore` Float32 `json:$.record.scorecard_score` DEFAULT 0,
++    `scorecardScore` String `json:$.record.scorecard_score` DEFAULT '0',
+     `scorecardLastRunAt` Nullable(DateTime64(3)) `json:$.record.scorecard_last_run_at`,
+     `skipEnrichment` UInt8 `json:$.record.skip_enrichment` DEFAULT 0,
+     `lastSyncedAt` Nullable(DateTime64(3)) `json:$.record.last_synced_at`,
++    `securityPolicyEnabled` Nullable(UInt8) `json:$.record.security_policy_enabled`,
++    `securityFileEnabled` Nullable(UInt8) `json:$.record.security_file_enabled`,
++    `snapshotAt` Nullable(DateTime64(3)) `json:$.record.snapshot_at`,
++    `branchProtectionEnabled` Nullable(UInt8) `json:$.record.branch_protection_enabled`,
++    `branchProtectionAllowsForcePush` Nullable(UInt8) `json:$.record.branch_protection_allows_force_push`,
++    `branchProtectionRequiredReviews` Nullable(Int32) `json:$.record.branch_protection_required_reviews`,
++    `branchProtectionRequiresStatusChecks` Nullable(UInt8) `json:$.record.branch_protection_requires_status_checks`,
+     `updatedAt` DateTime64(3) `json:$.record.updated_at`
+ 
+ ENGINE ReplacingMergeTree

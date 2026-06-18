@@ -1,0 +1,237 @@
+diff --git a/scripts/services/docker/Dockerfile.security_best_practices_worker b/scripts/services/docker/Dockerfile.security_best_practices_worker
+index c954c19fde..cb250dc12f 100644
+--- a/scripts/services/docker/Dockerfile.security_best_practices_worker
++++ b/scripts/services/docker/Dockerfile.security_best_practices_worker
+@@ -1,8 +1,10 @@
++ARG PVTR_VERSION=v0.23.2
++
+ FROM alpine:3.21 AS core
+ RUN apk add --no-cache wget tar unzip
+ 
+ WORKDIR /app
+-ARG VERSION=0.7.0
++ARG VERSION=0.21.2
+ ARG PLATFORM=Linux_x86_64
+ 
+ RUN wget https://github.com/privateerproj/privateer/releases/download/v${VERSION}/privateer_${PLATFORM}.tar.gz
+@@ -12,6 +14,7 @@ FROM golang:1.26.3-alpine3.23 AS plugin
+ RUN apk add --no-cache make git
+ WORKDIR /plugin
+ ARG PVTR_COMMIT=c7bd9538d64f7eaab94a05c9b5fd05458a387b1c
++ARG PVTR_VERSION
+ # To run the latest version of the plugin, we need to use the latest commit of the pvtr-github-repo-scanner repository.
+ # Currently using v0.23.2: https://github.com/ossf/pvtr-github-repo-scanner/commit/c7bd9538d64f7eaab94a05c9b5fd05458a387b1c
+ RUN git clone https://github.com/ossf/pvtr-github-repo-scanner.git && cd pvtr-github-repo-scanner && git checkout ${PVTR_COMMIT}
+@@ -34,8 +37,10 @@ FROM node:20-bookworm-slim as runner
+ 
+ RUN mkdir -p /.privateer/bin
+ WORKDIR /.privateer/bin
+-COPY --from=core /app/privateer .
++COPY --from=core /app/pvtr ./privateer
++ARG PVTR_VERSION
+ COPY --from=plugin /plugin/github-repo /root/.privateer/bin/github-repo
++RUN echo "{\"plugins\":[{\"name\":\"github-repo\",\"version\":\"${PVTR_VERSION}\",\"binaryPath\":\"github-repo\"}]}" > /root/.privateer/bin/plugins.json
+ COPY ./services/apps/security_best_practices_worker/example-config.yml /.privateer/example-config.yml
+ 
+ WORKDIR /usr/crowd/app
+diff --git a/services/apps/security_best_practices_worker/src/activities/index.ts b/services/apps/security_best_practices_worker/src/activities/index.ts
+index d7eb39c1dd..e1d92a5712 100644
+--- a/services/apps/security_best_practices_worker/src/activities/index.ts
++++ b/services/apps/security_best_practices_worker/src/activities/index.ts
+@@ -96,8 +96,18 @@ export async function saveOSPSBaselineInsightsToDB(
+   const CATALOG_ID = 'osps-baseline-2026-02'
+   const redisCache = new RedisCache(`osps-baseline-insights`, svc.redis, svc.log)
+   const result = await redisCache.get(key)
++  if (!result) {
++    throw new Error(`No cached privateer result found for key: ${key}`)
++  }
+   const parsedResult: ISecurityInsightsPrivateerResult = JSON.parse(result)
+-  const evaluationSuite = parsedResult.evaluation_suites.find((s) => s.catalog_id === CATALOG_ID)
++  const evaluationSuite = parsedResult['evaluation-suites']?.find(
++    (s) => s['catalog-id'] === CATALOG_ID,
++  )
++  if (!evaluationSuite) {
++    throw new Error(
++      `No evaluation suite found for catalog '${CATALOG_ID}' in privateer output for repo ${repo.repoUrl}`,
++    )
++  }
+ 
+   const qx = pgpQx(svc.postgres.writer.connection())
+ 
+@@ -105,24 +115,30 @@ export async function saveOSPSBaselineInsightsToDB(
+     repo: repo.repoUrl,
+     insightsProjectId: repo.insightsProjectId,
+     insightsProjectSlug: repo.insightsProjectSlug,
+-    catalogId: evaluationSuite.catalog_id,
++    catalogId: evaluationSuite['catalog-id'],
+     name: evaluationSuite.name,
+     result: evaluationSuite.result,
+-    corruptedState: evaluationSuite.corrupted_state,
++    corruptedState: evaluationSuite['corrupted-state'],
+   })
+ 
+-  const suite = await findEvaluationSuite(qx, repo.repoUrl, evaluationSuite.catalog_id)
++  const suite = await findEvaluationSuite(qx, repo.repoUrl, evaluationSuite['catalog-id'])
++  if (!suite) {
++    throw new Error(
++      `Evaluation suite not found after insert for repo ${repo.repoUrl}, catalog ${evaluationSuite['catalog-id']}`,
++    )
++  }
+ 
+-  for (const evaluation of evaluationSuite.control_evaluations) {
++  for (const evaluation of evaluationSuite['control-evaluations'].evaluations) {
++    const controlId = evaluation.control['entry-id']
+     await addSuiteControlEvaluation(qx, {
+-      controlId: evaluation['control-id'],
++      controlId,
+       name: evaluation.name,
+-      corruptedState: evaluation['corrupted-state'],
++      corruptedState: false,
+       message: evaluation.message,
+       repo: repo.repoUrl,
+       insightsProjectId: repo.insightsProjectId,
+       insightsProjectSlug: repo.insightsProjectSlug,
+-      remediationGuide: evaluation['remediation-guide'] || '',
++      remediationGuide: '',
+       result: evaluation.result,
+       securityInsightsEvaluationSuiteId: suite.id,
+     })
+@@ -130,10 +146,16 @@ export async function saveOSPSBaselineInsightsToDB(
+     const controlEvaluation = await findSuiteControlEvaluation(
+       qx,
+       repo.repoUrl,
+-      evaluation['control-id'],
++      controlId,
+       suite.id,
+     )
+-    for (const assessment of evaluation.assessments) {
++    if (!controlEvaluation) {
++      throw new Error(
++        `Control evaluation not found after insert for repo ${repo.repoUrl}, controlId ${controlId}, suiteId ${suite.id}`,
++      )
++    }
++    for (const assessment of evaluation['assessment-logs']) {
++      const runDuration = computeRunDuration(assessment.start, assessment.end)
+       await addControlEvaluationAssessment(qx, {
+         applicability: assessment.applicability,
+         description: assessment.description,
+@@ -141,17 +163,17 @@ export async function saveOSPSBaselineInsightsToDB(
+         repo: repo.repoUrl,
+         insightsProjectId: repo.insightsProjectId,
+         insightsProjectSlug: repo.insightsProjectSlug,
+-        requirementId: assessment['requirement-id'],
++        requirementId: assessment.requirement['entry-id'],
+         result: assessment.result,
+-        runDuration: assessment['run-duration'] || '',
++        runDuration,
+         steps: assessment.steps,
+         stepsExecuted: assessment['steps-executed'] || 0,
+         securityInsightsEvaluationId: controlEvaluation.id,
+         recommendation: assessment.recommendation,
+         start: assessment.start,
+         end: assessment.end,
+-        value: assessment.value,
+-        changes: assessment.changes,
++        value: null,
++        changes: null,
+       })
+     }
+   }
+@@ -174,6 +196,14 @@ export async function saveOSPSBaselineInsightsToRedis(
+   await redisCache.set(key, JSON.stringify(insights), 60 * 60 * 24) // 1 day
+ }
+ 
++function computeRunDuration(start: string | undefined, end: string | undefined): string {
++  if (!start || !end) return ''
++  const startMs = new Date(start).getTime()
++  const endMs = new Date(end).getTime()
++  if (isNaN(startMs) || isNaN(endMs) || endMs < startMs) return ''
++  return `${endMs - startMs}ms`
++}
++
+ async function cleanupFiles(repoName: string): Promise<void> {
+   // Delete the file
+   try {
+@@ -221,11 +251,22 @@ async function runBinary(
+     })
+ 
+     proc.on('close', (code) => {
+-      if (code === 0) {
+-        svc.log.info(`Binary completed successfully`)
++      // exit code 0 = all tests passed, 1 = some tests failed — both mean the
++      // evaluation ran to completion and wrote its output file
++      if (code === 0 || code === 1) {
++        svc.log.info(`Binary completed with exit code ${code}`)
+         resolve({ stdout, stderr })
+       } else {
+-        reject(new Error(`Binary exited with code ${code}\nStderr:\n${stderr}Stdout:\n${stdout}`))
++        const truncated = (s: string) => (s.length > 500 ? s.slice(0, 500) + '…' : s)
++        const truncStdout = truncated(stdout)
++        const truncStderr = truncated(stderr)
++        const err = Object.assign(
++          new Error(
++            `Binary exited with code ${code}\nStderr:\n${truncStderr}\nStdout:\n${truncStdout}`,
++          ),
++          { stdout: truncStdout, stderr: truncStderr },
++        )
++        reject(err)
+       }
+     })
+   })
+diff --git a/services/apps/security_best_practices_worker/src/types.ts b/services/apps/security_best_practices_worker/src/types.ts
+index c422a06a84..e50a44a4f2 100644
+--- a/services/apps/security_best_practices_worker/src/types.ts
++++ b/services/apps/security_best_practices_worker/src/types.ts
+@@ -1,28 +1,31 @@
+ export interface ISecurityInsightsPrivateerResult {
+-  evaluation_suites: ISecurityInsightsPrivateerEvaluationSuite[]
++  'evaluation-suites': ISecurityInsightsPrivateerEvaluationSuite[]
+ }
+ 
+ export interface ISecurityInsightsPrivateerEvaluationSuite {
+   name: string
+-  catalog_id: string
+-  start_time: string
+-  end_time: string
++  'catalog-id': string
++  'start-time': string
++  'end-time': string
+   result: string
+-  corrupted_state: boolean
+-  control_evaluations: ISecurityInsightsPrivateerResultControlEvaluations[]
++  'corrupted-state': boolean
++  'control-evaluations': {
++    result: string
++    evaluations: ISecurityInsightsPrivateerResultControlEvaluations[]
++  }
+ }
+ 
+ export interface ISecurityInsightsPrivateerResultControlEvaluations {
+   name: string
+-  'control-id': string
++  control: { 'reference-id': string; 'entry-id': string }
+   result: string
+   message: string
+-  'corrupted-state': boolean
+-  assessments: ISecurityInsightsPrivateerResultAssessment[]
++  'assessment-logs': ISecurityInsightsPrivateerResultAssessment[]
+ }
+ 
+ export interface ISecurityInsightsPrivateerResultAssessment {
+-  'requirement-id': string
++  requirement: { 'reference-id': string; 'entry-id': string }
++  plan?: { 'reference-id': string; 'entry-id': string }
+   applicability: string[]
+   description: string
+   result: string
+@@ -31,9 +34,8 @@ export interface ISecurityInsightsPrivateerResultAssessment {
+   'steps-executed': number
+   start: string
+   end?: string
+-  value?: unknown
+-  changes?: Record<string, unknown>
+   recommendation?: string
++  'confidence-level'?: string
+ }
+ 
+ export interface IUpsertOSPSBaselineSecurityInsightsParams {

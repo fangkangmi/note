@@ -1,0 +1,807 @@
+diff --git a/backend/src/api/public/v1/members/work-experiences/deleteMemberWorkExperience.ts b/backend/src/api/public/v1/members/work-experiences/deleteMemberWorkExperience.ts
+index 2eb52731c3..80784bff0b 100644
+--- a/backend/src/api/public/v1/members/work-experiences/deleteMemberWorkExperience.ts
++++ b/backend/src/api/public/v1/members/work-experiences/deleteMemberWorkExperience.ts
+@@ -7,12 +7,13 @@ import { signalMemberUpdate } from '@crowd/common_services'
+ import {
+   MemberField,
+   deleteMemberOrganizations,
+-  fetchManyMemberOrgsWithOrgData,
++  fetchMemberOrganizations,
+   findMemberById,
+   optionsQx,
+ } from '@crowd/data-access-layer'
+ 
+ import { noContent } from '@/utils/api'
++import { getOverlappingEmailDomainMemberOrganizations } from '@/utils/mapper'
+ import { validateOrThrow } from '@/utils/validation'
+ 
+ const paramsSchema = z.object({
+@@ -31,21 +32,31 @@ export async function deleteMemberWorkExperience(req: Request, res: Response): P
+     throw new NotFoundError('Member not found')
+   }
+ 
+-  const orgsMap = await fetchManyMemberOrgsWithOrgData(qx, [memberId])
+-
+-  const memberOrg = (orgsMap.get(memberId) ?? []).find((mo) => mo.id === workExperienceId)
++  const memberOrgs = await fetchMemberOrganizations(qx, memberId)
++  const memberOrg = memberOrgs.find((mo) => mo.id === workExperienceId)
+ 
+   if (!memberOrg) {
+     throw new NotFoundError('Work experience not found')
+   }
+ 
++  const overlappingEmailDomainRows = getOverlappingEmailDomainMemberOrganizations(
++    memberOrgs,
++    memberOrg,
++  )
++
++  const memberOrgIdsToDelete = [
++    workExperienceId,
++    ...overlappingEmailDomainRows.flatMap((row) => (row.id ? [row.id] : [])),
++  ]
++
++  // Delete hidden grouped rows with the visible row so read responses stay consistent
+   await captureApiChange(
+     req,
+     memberEditOrganizationsAction(memberId, async (captureOldState, captureNewState) => {
+       captureOldState(memberOrg)
+ 
+       await qx.tx(async (tx) => {
+-        await deleteMemberOrganizations(tx, memberId, [workExperienceId])
++        await deleteMemberOrganizations(tx, memberId, memberOrgIdsToDelete)
+       })
+ 
+       // Signal after commit so the workflow sees persisted changes
+diff --git a/backend/src/api/public/v1/members/work-experiences/getMemberWorkExperiences.ts b/backend/src/api/public/v1/members/work-experiences/getMemberWorkExperiences.ts
+index 3b68035b08..c253f49f3b 100644
+--- a/backend/src/api/public/v1/members/work-experiences/getMemberWorkExperiences.ts
++++ b/backend/src/api/public/v1/members/work-experiences/getMemberWorkExperiences.ts
+@@ -10,7 +10,7 @@ import {
+ } from '@crowd/data-access-layer'
+ 
+ import { ok } from '@/utils/api'
+-import { toMemberWorkExperience } from '@/utils/mapper'
++import { groupMemberOrganizations, toMemberWorkExperience } from '@/utils/mapper'
+ import { validateOrThrow } from '@/utils/validation'
+ 
+ const paramsSchema = z.object({
+@@ -28,7 +28,9 @@ export async function getMemberWorkExperiences(req: Request, res: Response): Pro
+   }
+ 
+   const orgsMap = await fetchManyMemberOrgsWithOrgData(qx, [memberId])
+-  const workExperiences = (orgsMap.get(memberId) ?? []).map(toMemberWorkExperience)
++  const workExperiences = groupMemberOrganizations(orgsMap.get(memberId) ?? []).map(
++    toMemberWorkExperience,
++  )
+ 
+   ok(res, { memberId, workExperiences })
+ }
+diff --git a/backend/src/api/public/v1/members/work-experiences/updateMemberWorkExperience.ts b/backend/src/api/public/v1/members/work-experiences/updateMemberWorkExperience.ts
+index 76c75b0d87..b0e04ebb05 100644
+--- a/backend/src/api/public/v1/members/work-experiences/updateMemberWorkExperience.ts
++++ b/backend/src/api/public/v1/members/work-experiences/updateMemberWorkExperience.ts
+@@ -8,6 +8,7 @@ import {
+   MemberField,
+   cleanSoftDeletedMemberOrganization,
+   fetchManyMemberOrgsWithOrgData,
++  fetchMemberOrganizations,
+   findMemberById,
+   optionsQx,
+   updateMemberOrganization,
+@@ -15,7 +16,11 @@ import {
+ import type { MemberOrganizationDateRange, MemberOrganizationUpdate } from '@crowd/types'
+ 
+ import { ok } from '@/utils/api'
+-import { toMemberWorkExperience } from '@/utils/mapper'
++import {
++  getOverlappingEmailDomainMemberOrganizations,
++  groupMemberOrganizations,
++  toMemberWorkExperience,
++} from '@/utils/mapper'
+ import { validateOrThrow } from '@/utils/validation'
+ 
+ const paramsSchema = z.object({
+@@ -45,8 +50,8 @@ export async function updateMemberWorkExperience(req: Request, res: Response): P
+     throw new NotFoundError('Member not found')
+   }
+ 
+-  const orgsMap = await fetchManyMemberOrgsWithOrgData(qx, [memberId])
+-  const existing = (orgsMap.get(memberId) ?? []).find((mo) => mo.id === workExperienceId)
++  const memberOrgs = await fetchMemberOrganizations(qx, memberId)
++  const existing = memberOrgs.find((mo) => mo.id === workExperienceId)
+ 
+   if (!existing) {
+     throw new NotFoundError('Work experience not found')
+@@ -80,6 +85,34 @@ export async function updateMemberWorkExperience(req: Request, res: Response): P
+       await qx.tx(async (tx) => {
+         await cleanSoftDeletedMemberOrganization(tx, memberId, data.organizationId, update)
+         await updateMemberOrganization(tx, memberId, workExperienceId, update)
++
++        const overlapBasis = { ...existing, ...update }
++
++        const overlappingEmailDomainRows = getOverlappingEmailDomainMemberOrganizations(
++          memberOrgs,
++          overlapBasis,
++        )
++
++        const groupedUpdate: MemberOrganizationUpdate = {}
++
++        // Keep grouped rows aligned for shared display fields; dates stay on the edited row
++        if (data.jobTitle !== undefined) {
++          groupedUpdate.title = data.jobTitle
++        }
++        if (data.verified !== undefined) {
++          groupedUpdate.verified = data.verified
++        }
++        if (data.verifiedBy !== undefined) {
++          groupedUpdate.verifiedBy = data.verifiedBy
++        }
++
++        if (overlappingEmailDomainRows.length > 0 && Object.keys(groupedUpdate).length > 0) {
++          for (const overlappingRow of overlappingEmailDomainRows.filter(
++            (row): row is typeof row & { id: string } => !!row.id,
++          )) {
++            await updateMemberOrganization(tx, memberId, overlappingRow.id, groupedUpdate)
++          }
++        }
+       })
+ 
+       // Signal after commit so the workflow sees persisted changes
+@@ -88,7 +121,10 @@ export async function updateMemberWorkExperience(req: Request, res: Response): P
+       })
+ 
+       const orgsMap = await fetchManyMemberOrgsWithOrgData(qx, [memberId])
+-      const updatedMo = (orgsMap.get(memberId) ?? []).find((mo) => mo.id === workExperienceId)
++
++      const updatedMo = groupMemberOrganizations(orgsMap.get(memberId) ?? []).find(
++        (mo) => mo.id === workExperienceId,
++      )
+ 
+       if (!updatedMo) {
+         throw new NotFoundError('Work experience not found')
+diff --git a/backend/src/api/public/v1/members/work-experiences/verifyMemberWorkExperience.ts b/backend/src/api/public/v1/members/work-experiences/verifyMemberWorkExperience.ts
+index 9a09b2ca17..a4fb2b3a95 100644
+--- a/backend/src/api/public/v1/members/work-experiences/verifyMemberWorkExperience.ts
++++ b/backend/src/api/public/v1/members/work-experiences/verifyMemberWorkExperience.ts
+@@ -8,14 +8,19 @@ import {
+   MemberField,
+   deleteMemberOrganizations,
+   fetchManyMemberOrgsWithOrgData,
++  fetchMemberOrganizations,
+   findMemberById,
+   optionsQx,
+   updateMemberOrganization,
+ } from '@crowd/data-access-layer'
+-import { IMemberOrganization } from '@crowd/types'
++import { IMemberOrganization, IMemberRoleWithOrganization } from '@crowd/types'
+ 
+ import { ok } from '@/utils/api'
+-import { toMemberWorkExperience } from '@/utils/mapper'
++import {
++  getOverlappingEmailDomainMemberOrganizations,
++  groupMemberOrganizations,
++  toMemberWorkExperience,
++} from '@/utils/mapper'
+ import { validateOrThrow } from '@/utils/validation'
+ 
+ const paramsSchema = z.object({
+@@ -40,13 +45,25 @@ export async function verifyMemberWorkExperience(req: Request, res: Response): P
+     throw new NotFoundError('Member not found')
+   }
+ 
+-  const orgsMap = await fetchManyMemberOrgsWithOrgData(qx, [memberId])
+-  const memberOrg = (orgsMap.get(memberId) ?? []).find((mo) => mo.id === workExperienceId)
++  const memberOrgs = await fetchMemberOrganizations(qx, memberId)
++  const memberOrg = memberOrgs.find((mo) => mo.id === workExperienceId)
+ 
+   if (!memberOrg) {
+     throw new NotFoundError('Work experience not found')
+   }
+ 
++  const overlappingEmailDomainRows = getOverlappingEmailDomainMemberOrganizations(
++    memberOrgs,
++    memberOrg,
++  )
++
++  const memberOrgIdsToDelete = [
++    workExperienceId,
++    ...overlappingEmailDomainRows.flatMap((row) => (row.id ? [row.id] : [])),
++  ]
++
++  const verifiedUpdate = { verified, verifiedBy }
++
+   let updatedMemberOrg: IMemberOrganization | undefined
+ 
+   await captureApiChange(
+@@ -56,12 +73,22 @@ export async function verifyMemberWorkExperience(req: Request, res: Response): P
+ 
+       await qx.tx(async (tx) => {
+         if (verified) {
+-          updatedMemberOrg = await updateMemberOrganization(tx, memberId, workExperienceId, {
+-            verified,
+-            verifiedBy,
+-          })
++          // Verification status belongs to the grouped work experience, not just the visible row
++          updatedMemberOrg = await updateMemberOrganization(
++            tx,
++            memberId,
++            workExperienceId,
++            verifiedUpdate,
++          )
++
++          for (const overlappingRow of overlappingEmailDomainRows.filter(
++            (row): row is typeof row & { id: string } => !!row.id,
++          )) {
++            await updateMemberOrganization(tx, memberId, overlappingRow.id, verifiedUpdate)
++          }
+         } else {
+-          await deleteMemberOrganizations(tx, memberId, [workExperienceId], true)
++          // Unverifying removes the grouped work experience from both visible and hidden rows
++          await deleteMemberOrganizations(tx, memberId, memberOrgIdsToDelete, true)
+         }
+       })
+ 
+@@ -76,5 +103,13 @@ export async function verifyMemberWorkExperience(req: Request, res: Response): P
+     }),
+   )
+ 
+-  ok(res, toMemberWorkExperience({ ...memberOrg, ...updatedMemberOrg }))
++  const orgsMap = await fetchManyMemberOrgsWithOrgData(qx, [memberId])
++
++  const responseMo: IMemberRoleWithOrganization =
++    groupMemberOrganizations(orgsMap.get(memberId) ?? []).find(
++      (mo) => mo.id === workExperienceId,
++    ) ??
++    ({ ...memberOrg, ...updatedMemberOrg, verified, verifiedBy } as IMemberRoleWithOrganization)
++
++  ok(res, toMemberWorkExperience(responseMo))
+ }
+diff --git a/backend/src/services/member/memberAffiliationsService.ts b/backend/src/services/member/memberAffiliationsService.ts
+index ca9ddac5c6..df049e020b 100644
+--- a/backend/src/services/member/memberAffiliationsService.ts
++++ b/backend/src/services/member/memberAffiliationsService.ts
+@@ -3,7 +3,13 @@ import { uniq } from 'lodash'
+ 
+ import { Error400, dateIntersects, groupBy } from '@crowd/common'
+ import { signalMemberUpdate } from '@crowd/common_services'
++import {
++  changeMemberOrganizationAffiliationOverrides,
++  fetchMemberOrganizations,
++  findMemberAffiliationOverrides,
++} from '@crowd/data-access-layer'
+ import { findMaintainerRoles } from '@crowd/data-access-layer/src/maintainers'
++import { deleteMemberSegmentAffiliations } from '@crowd/data-access-layer/src/member_segment_affiliations'
+ import { fetchManySegments } from '@crowd/data-access-layer/src/segments'
+ import { LoggerBase } from '@crowd/logging'
+ import {
+@@ -13,8 +19,8 @@ import {
+ } from '@crowd/types'
+ 
+ import MemberAffiliationsRepository from '@/database/repositories/member/memberAffiliationsRepository'
+-import MemberOrganizationAffiliationOverridesRepository from '@/database/repositories/member/memberOrganizationAffiliationOverridesRepository'
+ import SequelizeRepository from '@/database/repositories/sequelizeRepository'
++import { getOverlappingEmailDomainMemberOrganizations } from '@/utils/mapper'
+ 
+ import { IServiceOptions } from '../IServiceOptions'
+ 
+@@ -102,11 +108,42 @@ export default class MemberAffiliationsService extends LoggerBase {
+       }
+     }
+ 
+-    const override = await MemberOrganizationAffiliationOverridesRepository.changeOverride(
+-      data,
+-      this.options,
++    const qx = SequelizeRepository.getQueryExecutor(this.options)
++
++    const memberOrgs = await fetchMemberOrganizations(qx, data.memberId)
++    const memberOrg = memberOrgs.find((mo) => mo.id === data.memberOrganizationId)
++
++    const overlappingEmailDomainRows = memberOrg
++      ? getOverlappingEmailDomainMemberOrganizations(memberOrgs, memberOrg)
++      : []
++
++    const memberOrgIds = [
++      data.memberOrganizationId,
++      ...overlappingEmailDomainRows.flatMap((row) => (row.id ? [row.id] : [])),
++    ]
++
++    // Apply the override to hidden grouped rows so the merged work experience has one decision
++    await changeMemberOrganizationAffiliationOverrides(
++      qx,
++      memberOrgIds.map((memberOrganizationId) => ({
++        ...data,
++        memberOrganizationId,
++      })),
+     )
+ 
++    if (data.allowAffiliation === false && memberOrg?.organizationId) {
++      await deleteMemberSegmentAffiliations(qx, {
++        memberId: data.memberId,
++        organizationId: memberOrg.organizationId,
++      })
++    }
++
++    const overrides = await findMemberAffiliationOverrides(qx, data.memberId, [
++      data.memberOrganizationId,
++    ])
++
++    const override = overrides[0]
++
+     await signalMemberUpdate(this.options.temporal, data.memberId)
+ 
+     return override
+diff --git a/backend/src/services/member/memberOrganizationsService.ts b/backend/src/services/member/memberOrganizationsService.ts
+index a68ba2378f..b14febe6b2 100644
+--- a/backend/src/services/member/memberOrganizationsService.ts
++++ b/backend/src/services/member/memberOrganizationsService.ts
+@@ -28,6 +28,10 @@ import {
+ } from '@crowd/types'
+ 
+ import SequelizeRepository from '@/database/repositories/sequelizeRepository'
++import {
++  getOverlappingEmailDomainMemberOrganizations,
++  groupMemberOrganizations,
++} from '@/utils/mapper'
+ 
+ import { IServiceOptions } from '../IServiceOptions'
+ 
+@@ -83,8 +87,12 @@ export default class MemberOrganizationsService extends LoggerBase {
+       memberOrganizations.map((mo) => mo.id),
+     )
+ 
++    const overridesByMemberOrganizationId = new Map(
++      affiliationOverrides.map((override) => [override.memberOrganizationId, override]),
++    )
++
+     // Create mapping by id to speed up the processing
+-    const orgByid: Record<string, IOrganizationSummary> = organizations.reduce(
++    const orgById: Record<string, IOrganizationSummary> = organizations.reduce(
+       (obj: Record<string, IOrganizationSummary>, org) => ({
+         ...obj,
+         [org.id]: org,
+@@ -93,16 +101,47 @@ export default class MemberOrganizationsService extends LoggerBase {
+     )
+ 
+     // Format the results and order by dateStart and dateEnd
+-    const allOrganizations = memberOrganizations
+-      .filter((mo) => orgByid[mo.organizationId]) // Only include non-deleted organizations
+-      .map((mo) => ({
+-        ...(orgByid[mo.organizationId] || {}),
+-        id: mo.organizationId,
+-        memberOrganizations: {
+-          ...mo,
+-          affiliationOverride: affiliationOverrides.find((ao) => ao.memberOrganizationId === mo.id),
+-        },
+-      }))
++    const groupedMemberOrganizations = groupMemberOrganizations(memberOrganizations)
++
++    const allOrganizations = groupedMemberOrganizations
++      .filter((mo): mo is typeof mo & { id: string } => !!mo.id && !!orgById[mo.organizationId])
++      .map((mo) => {
++        const overlappingEmailDomainRows = getOverlappingEmailDomainMemberOrganizations(
++          memberOrganizations,
++          mo,
++        )
++
++        const relatedIds = [mo.id, ...overlappingEmailDomainRows.map((row) => row.id)]
++
++        const relatedOverrides = relatedIds.map((memberOrganizationId) =>
++          overridesByMemberOrganizationId.get(memberOrganizationId),
++        )
++
++        const resolvedOverrides = relatedOverrides.filter((override) => !!override)
++
++        // Merge override flags from rows that are displayed as one work experience
++        const allowAffiliation =
++          resolvedOverrides.length === 0 ||
++          resolvedOverrides.every((override) => override.allowAffiliation !== false)
++
++        const isPrimaryWorkExperience = resolvedOverrides.some(
++          (override) => override.isPrimaryWorkExperience,
++        )
++
++        return {
++          ...orgById[mo.organizationId],
++          id: mo.organizationId,
++          memberOrganizations: {
++            ...mo,
++            affiliationOverride: {
++              memberId,
++              memberOrganizationId: mo.id,
++              allowAffiliation,
++              isPrimaryWorkExperience,
++            },
++          },
++        }
++      })
+       .sort((a, b) => {
+         if (!a || !b) {
+           return 0
+@@ -251,6 +290,35 @@ export default class MemberOrganizationsService extends LoggerBase {
+         source: OrganizationSource.UI,
+       })
+ 
++      const memberOrganizations = await fetchMemberOrganizations(qx, memberId)
++
++      const overlapBasis = { ...existing, ...update }
++
++      const overlappingEmailDomainRows = getOverlappingEmailDomainMemberOrganizations(
++        memberOrganizations,
++        overlapBasis,
++      )
++
++      const groupedUpdate = lodash.pickBy(
++        {
++          // Keep grouped rows aligned for shared display fields; dates stay on the edited row
++          title: data.title,
++          verified: data.verified,
++          verifiedBy: data.verifiedBy,
++        },
++        (value) => value !== undefined,
++      ) as MemberOrganizationUpdate
++
++      if (overlappingEmailDomainRows.length > 0 && Object.keys(groupedUpdate).length > 0) {
++        for (const overlappingRow of overlappingEmailDomainRows) {
++          if (!overlappingRow.id) {
++            continue
++          }
++
++          await updateMemberOrganization(qx, memberId, overlappingRow.id, groupedUpdate)
++        }
++      }
++
+       // Trigger recalculation for old and new orgs if changed
+       const orgsToRecalculate = Array.from(
+         new Set([existing.organizationId, data.organizationId]),
+@@ -287,7 +355,18 @@ export default class MemberOrganizationsService extends LoggerBase {
+         throw new Error404(`Member organization with id ${id} not found!`)
+       }
+ 
+-      await deleteMemberOrganizations(qx, memberId, [id], true)
++      const overlappingEmailDomainRows = getOverlappingEmailDomainMemberOrganizations(
++        existingMemberOrganizations,
++        memberOrganizationToBeDeleted,
++      )
++
++      const memberOrganizationIdsToDelete = [
++        id,
++        ...overlappingEmailDomainRows.flatMap((row) => (row.id ? [row.id] : [])),
++      ]
++
++      // Delete hidden grouped rows with the visible row so list responses stay consistent
++      await deleteMemberOrganizations(qx, memberId, memberOrganizationIdsToDelete, true)
+ 
+       const result = await this.list(memberId, transaction)
+ 
+diff --git a/backend/src/utils/mapper.ts b/backend/src/utils/mapper.ts
+index 2ce358d1c2..44369f6c15 100644
+--- a/backend/src/utils/mapper.ts
++++ b/backend/src/utils/mapper.ts
+@@ -1,4 +1,127 @@
+-import type { IMemberRoleWithOrganization } from '@crowd/types'
++import { dateIntersects, getMemberOrganizationSourceRank } from '@crowd/common'
++import { normalizeMemberOrganizationDate } from '@crowd/common_services'
++import type { IMemberOrganization, IMemberRoleWithOrganization } from '@crowd/types'
++import { OrganizationSource } from '@crowd/types'
++
++function memberOrganizationsOverlap<T extends IMemberOrganization>(a: T, b: T): boolean {
++  return (
++    a.organizationId === b.organizationId &&
++    dateIntersects(
++      normalizeMemberOrganizationDate(a.dateStart),
++      normalizeMemberOrganizationDate(a.dateEnd),
++      normalizeMemberOrganizationDate(b.dateStart),
++      normalizeMemberOrganizationDate(b.dateEnd),
++    )
++  )
++}
++
++/**
++ * Finds email-domain rows that are represented by the same visible work experience.
++ */
++export function getOverlappingEmailDomainMemberOrganizations<T extends IMemberOrganization>(
++  rows: T[],
++  memberOrganization: T,
++): T[] {
++  return rows.filter(
++    (row) =>
++      row.id !== memberOrganization.id &&
++      row.source === OrganizationSource.EMAIL_DOMAIN &&
++      memberOrganizationsOverlap(row, memberOrganization),
++  )
++}
++
++/**
++ * Groups overlapping email-domain rows into the best non-email-domain display row.
++ */
++export function groupMemberOrganizations<T extends IMemberOrganization>(rows: T[]): T[] {
++  const emailDomainRows = rows.filter((row) => row.source === OrganizationSource.EMAIL_DOMAIN)
++  const nonEmailRows = rows.filter((row) => row.source !== OrganizationSource.EMAIL_DOMAIN)
++  const hiddenEmailDomainIds = new Set<string>()
++  const displayGroups = new Map<string, { displayRow: T; groupedEmailDomainRows: T[] }>()
++
++  for (const emailDomainRow of emailDomainRows.filter(
++    (row): row is T & { id: string } => !!row.id,
++  )) {
++    const overlappingNonEmailRows = nonEmailRows.filter((row) =>
++      memberOrganizationsOverlap(emailDomainRow, row),
++    )
++
++    if (overlappingNonEmailRows.length > 0) {
++      const displayRow = [...overlappingNonEmailRows].sort((a, b) => {
++        const rankDiff =
++          getMemberOrganizationSourceRank(a.source) - getMemberOrganizationSourceRank(b.source)
++        if (rankDiff !== 0) {
++          return rankDiff
++        }
++
++        return (a.id ?? '').localeCompare(b.id ?? '')
++      })[0]
++
++      if (displayRow.id) {
++        hiddenEmailDomainIds.add(emailDomainRow.id)
++
++        const existingGroup = displayGroups.get(displayRow.id)
++        if (existingGroup) {
++          existingGroup.groupedEmailDomainRows.push(emailDomainRow)
++        } else {
++          displayGroups.set(displayRow.id, {
++            displayRow,
++            groupedEmailDomainRows: [emailDomainRow],
++          })
++        }
++      }
++    }
++  }
++
++  return rows
++    .filter((row): row is T & { id: string } => !!row.id && !hiddenEmailDomainIds.has(row.id))
++    .map((row) => {
++      const group = displayGroups.get(row.id)
++      if (!group) {
++        return row
++      }
++
++      // Preserve the visible row while surfacing the combined sources and date range
++      const groupedRows = [group.displayRow, ...group.groupedEmailDomainRows]
++
++      const normalizedStarts = groupedRows
++        .map((groupedRow) => normalizeMemberOrganizationDate(groupedRow.dateStart))
++        .filter((date): date is string => date !== null)
++
++      const normalizedEnds = groupedRows.map((groupedRow) =>
++        normalizeMemberOrganizationDate(groupedRow.dateEnd),
++      )
++
++      const sources = new Set<string>()
++
++      for (const groupedRow of groupedRows) {
++        if (groupedRow.source) {
++          sources.add(groupedRow.source)
++        }
++      }
++
++      let dateEnd: string | null = null
++
++      if (normalizedEnds.some((date) => date === null)) {
++        dateEnd = null
++      } else if (normalizedEnds.length > 0) {
++        const datedEnds = normalizedEnds.filter((date): date is string => date !== null)
++        dateEnd = datedEnds.reduce((max, date) => (date > max ? date : max))
++      }
++
++      return {
++        ...row,
++        source: [...sources]
++          .sort((a, b) => getMemberOrganizationSourceRank(a) - getMemberOrganizationSourceRank(b))
++          .join(','),
++        dateStart:
++          normalizedStarts.length > 0
++            ? normalizedStarts.reduce((min, date) => (date < min ? date : min))
++            : null,
++        dateEnd,
++      }
++    })
++}
+ 
+ export function toMemberWorkExperience(mo: IMemberRoleWithOrganization) {
+   return {
+diff --git a/services/apps/cron_service/src/jobs/inferMemberOrganizationStintChanges.job.ts b/services/apps/cron_service/src/jobs/inferMemberOrganizationStintChanges.job.ts
+index 0ececd8b1b..8d03960d98 100644
+--- a/services/apps/cron_service/src/jobs/inferMemberOrganizationStintChanges.job.ts
++++ b/services/apps/cron_service/src/jobs/inferMemberOrganizationStintChanges.job.ts
+@@ -62,6 +62,7 @@ const job: IJobDefinition = {
+             qx,
+             memberId,
+             OrganizationSource.EMAIL_DOMAIN,
++            { withDeleted: true },
+           )
+ 
+           const changes = inferMemberOrganizationStintChanges(memberId, existingOrgs, orgDates)
+diff --git a/services/libs/common_services/src/services/member-organization.ts b/services/libs/common_services/src/services/member-organization.ts
+index 3f568301b8..5c2d9083f1 100644
+--- a/services/libs/common_services/src/services/member-organization.ts
++++ b/services/libs/common_services/src/services/member-organization.ts
+@@ -1,3 +1,4 @@
++import { EPOCH_DATE, dateIntersects } from '@crowd/common'
+ import {
+   IMemberOrganization,
+   MemberOrgDate,
+@@ -120,6 +121,30 @@ export function unmergeRoles(
+ export const MEMBER_ORG_STINT_CHANGES_QUEUE = 'infer-member-organization-stint-changes:members'
+ export const MEMBER_ORG_STINT_CHANGES_DATES_PREFIX = 'infer-member-organization-stint-changes:dates'
+ 
++const EPOCH_TOLERANCE_MS = 5 * 86_400_000
++
++/**
++ * Converts member organization dates into YYYY-MM-DD and treats epoch-like values as missing.
++ */
++export function normalizeMemberOrganizationDate(
++  date: string | Date | null | undefined,
++): string | null {
++  if (date === null || date === undefined || date === '') {
++    return null
++  }
++
++  const parsed = new Date(date)
++  if (Number.isNaN(parsed.getTime())) {
++    return null
++  }
++
++  if (parsed.getTime() <= EPOCH_DATE.getTime() + EPOCH_TOLERANCE_MS) {
++    return null
++  }
++
++  return parsed.toISOString().split('T')[0]
++}
++
+ interface Stint {
+   id: string | null
+   organizationId: string
+@@ -132,29 +157,58 @@ interface Stint {
+ type DatedStint = Stint & { dateStart: string; dateEnd: string }
+ 
+ /**
+- * Core logic to determine if activity dates should expand existing stints or create new ones
++ * Core logic to determine if activity dates should expand existing stints or create new ones.
+  */
+ export function inferMemberOrganizationStintChanges(
+   memberId: string,
+   existingRows: IMemberOrganization[],
+   orgDates: MemberOrgDate[],
+ ): MemberOrgStintChange[] {
+-  const toIso = (v: string | Date) => new Date(v).toISOString().split('T')[0]
+   const diff = (a: string, b: string) => Math.abs(Date.parse(b) - Date.parse(a)) / 86_400_000
+ 
++  // Normalize once so all range comparisons use the same date shape
++  const normalizedRows = existingRows.map((row) => ({
++    ...row,
++    dateStart: normalizeMemberOrganizationDate(row.dateStart),
++    dateEnd: normalizeMemberOrganizationDate(row.dateEnd),
++  }))
++
++  const activeRows = normalizedRows.filter((row) => !row.deletedAt)
++
++  // Deleted dated rows suppress recreation for dates the user removed
++  const deletedRows = normalizedRows.filter(
++    (row): row is typeof row & { dateStart: string } => !!row.deletedAt && !!row.dateStart,
++  )
++
++  const sortedDates = orgDates
++    .map((entry) => ({
++      organizationId: entry.organizationId,
++      date: normalizeMemberOrganizationDate(entry.date),
++    }))
++    .filter((entry): entry is MemberOrgDate => entry.date !== null)
++    .sort((a, b) => a.date.localeCompare(b.date))
++
+   // 1. Initialize local state to track modifications and new records
+-  const stints: Stint[] = existingRows.map((r) => ({
+-    id: r.id ?? null,
+-    organizationId: r.organizationId,
+-    dateStart: r.dateStart ? toIso(r.dateStart) : null,
+-    dateEnd: r.dateEnd ? toIso(r.dateEnd) : null,
++  const stints: Stint[] = activeRows.map((row) => ({
++    id: row.id ?? null,
++    organizationId: row.organizationId,
++    dateStart: row.dateStart,
++    dateEnd: row.dateEnd,
+     isDirty: false,
+     isNew: false,
+   }))
+ 
+-  const sortedDates = [...orgDates].sort((a, b) => a.date.localeCompare(b.date))
+-
+   for (const { organizationId, date: targetDate } of sortedDates) {
++    if (
++      deletedRows.some(
++        (row) =>
++          row.organizationId === organizationId &&
++          dateIntersects(row.dateStart, row.dateEnd, targetDate, targetDate),
++      )
++    ) {
++      continue
++    }
++
+     const orgStints = stints.filter((s) => s.organizationId === organizationId)
+ 
+     // 2. Skip if the date is already covered by an existing stint
+@@ -247,17 +301,26 @@ export function inferMemberOrganizationStintChanges(
+   }
+ 
+   // 7. Map only modified or new stints back to change objects
+-  return stints
+-    .filter((s) => s.isDirty)
+-    .map((s): MemberOrgStintChange => {
+-      const payload = {
+-        memberId,
+-        organizationId: s.organizationId,
+-        dateStart: s.dateStart as string,
+-        dateEnd: s.dateEnd as string,
+-      }
++  return stints.flatMap((s): MemberOrgStintChange[] => {
++    if (!s.isDirty || !s.dateStart || !s.dateEnd) {
++      return []
++    }
+ 
+-      if (s.isNew) return { type: 'insert', ...payload }
+-      return { type: 'update', id: s.id as string, ...payload }
+-    })
++    const payload = {
++      memberId,
++      organizationId: s.organizationId,
++      dateStart: s.dateStart,
++      dateEnd: s.dateEnd,
++    }
++
++    if (s.isNew) {
++      return [{ type: 'insert', ...payload }]
++    }
++
++    if (!s.id) {
++      return []
++    }
++
++    return [{ type: 'update', id: s.id, ...payload }]
++  })
+ }
+diff --git a/services/libs/data-access-layer/src/members/organizations.ts b/services/libs/data-access-layer/src/members/organizations.ts
+index 792883a995..debe4b21dc 100644
+--- a/services/libs/data-access-layer/src/members/organizations.ts
++++ b/services/libs/data-access-layer/src/members/organizations.ts
+@@ -58,18 +58,32 @@ export async function fetchMemberOrganizationById(
+   )
+ }
+ 
++/**
++ * Fetches member organizations for a source, optionally including soft-deleted rows.
++ */
+ export async function fetchMemberOrganizationsBySource(
+   qx: QueryExecutor,
+   memberId: string,
+   source: OrganizationSource,
++  { withDeleted = false }: { withDeleted?: boolean } = {},
+ ): Promise<IMemberOrganization[]> {
++  const deletedClause = withDeleted ? '' : 'AND "deletedAt" IS NULL'
++
+   return qx.select(
+     `
+-      SELECT "id", "organizationId", "dateStart", "dateEnd", "title", "memberId", "source"
++      SELECT
++        "id",
++        "organizationId",
++        "dateStart",
++        "dateEnd",
++        "title",
++        "memberId",
++        "source",
++        "deletedAt"
+       FROM "memberOrganizations"
+       WHERE "memberId" = $(memberId)
+         AND "source" = $(source)
+-        AND "deletedAt" IS NULL
++        ${deletedClause}
+     `,
+     { memberId, source },
+   )

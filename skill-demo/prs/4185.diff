@@ -1,0 +1,1349 @@
+diff --git a/backend/src/api/public/v1/index.ts b/backend/src/api/public/v1/index.ts
+index 90f8571a24..8876f0a079 100644
+--- a/backend/src/api/public/v1/index.ts
++++ b/backend/src/api/public/v1/index.ts
+@@ -2,13 +2,23 @@ import { Router } from 'express'
+ 
+ import { NotFoundError } from '@crowd/common'
+ 
++import { createRateLimiter } from '@/api/apiRateLimiter'
++import { safeWrap } from '@/middlewares/errorMiddleware'
++
++// TODO: restore once read:stewardships is added to Auth0 staging tenant
++// import { SCOPES } from '@/security/scopes'
+ import { AUTH0_CONFIG } from '../../../conf'
+ import { oauth2Middleware } from '../middlewares/oauth2Middleware'
++// import { requireScopes } from '../middlewares/requireScopes'
+ import { staticApiKeyMiddleware } from '../middlewares/staticApiKeyMiddleware'
+ 
+ import { memberOrganizationAffiliationsRouter } from './affiliations'
+ import { membersRouter } from './members'
+ import { organizationsRouter } from './organizations'
++import { packagesRouter } from './packages'
++import { batchGetStewardship } from './packages/batchGetStewardship'
++
++const packagesRateLimiter = createRateLimiter({ max: 60, windowMs: 60 * 1000 })
+ 
+ export function v1Router(): Router {
+   const router = Router()
+@@ -17,6 +27,16 @@ export function v1Router(): Router {
+   router.use('/organizations', oauth2Middleware(AUTH0_CONFIG), organizationsRouter())
+   router.use('/affiliations', staticApiKeyMiddleware(), memberOrganizationAffiliationsRouter())
+ 
++  router.post(
++    /^\/packages:batch-stewardship\/?$/,
++    oauth2Middleware(AUTH0_CONFIG),
++    packagesRateLimiter,
++    // TODO: restore once read:stewardships is added to Auth0 staging tenant
++    // requireScopes([SCOPES.READ_STEWARDSHIPS]),
++    safeWrap(batchGetStewardship),
++  )
++  router.use('/packages', oauth2Middleware(AUTH0_CONFIG), packagesRouter())
++
+   router.use(() => {
+     throw new NotFoundError()
+   })
+diff --git a/backend/src/api/public/v1/packages/batchGetStewardship.ts b/backend/src/api/public/v1/packages/batchGetStewardship.ts
+new file mode 100644
+index 0000000000..9c140a8eca
+--- /dev/null
++++ b/backend/src/api/public/v1/packages/batchGetStewardship.ts
+@@ -0,0 +1,63 @@
++import type { Request, Response } from 'express'
++import { z } from 'zod'
++
++import { ok } from '@/utils/api'
++import { validateOrThrow } from '@/utils/validation'
++
++import { MOCK_DETAILS } from './mockData'
++
++const MAX_PURLS = 100
++
++const bodySchema = z.object({
++  purls: z
++    .array(z.string().trim().min(1))
++    .min(1)
++    .max(MAX_PURLS, `Maximum ${MAX_PURLS} purls per request`),
++})
++
++interface StewardshipSummary {
++  name: string
++  ecosystem: string
++  lifecycle: string
++  health: number
++  impact: number
++  openVulns: { low: number; medium: number; high: number; critical: number }
++  stewardship: string
++  stewards: null
++  lastActivityAt: null
++  lastActivityDescription: null
++}
++
++// TODO: replace with real DB queries once stewardship tables land
++export async function batchGetStewardship(req: Request, res: Response): Promise<void> {
++  const { purls } = validateOrThrow(bodySchema, req.body)
++
++  const packages: Record<string, StewardshipSummary | null> = {}
++  for (const purl of purls) {
++    const detail = MOCK_DETAILS[purl]
++    if (!detail) {
++      packages[purl] = null
++    } else {
++      const openVulns = { low: 0, medium: 0, high: 0, critical: 0 }
++      for (const advisory of detail.security.advisories) {
++        if (advisory.severity in openVulns) {
++          openVulns[advisory.severity] += 1
++        }
++      }
++      packages[purl] = {
++        name: detail.name,
++        ecosystem: detail.ecosystem,
++        lifecycle: detail.general.riskSignals.lifecycle,
++        health: detail.general.healthScore.total,
++        impact: detail.general.impact.impactScore,
++        openVulns,
++        stewardship: 'unassigned',
++        stewards: null,
++        lastActivityAt: null,
++        lastActivityDescription: null,
++      }
++    }
++  }
++
++  ok(res, { packages })
++}
+diff --git a/backend/src/api/public/v1/packages/getPackage.ts b/backend/src/api/public/v1/packages/getPackage.ts
+new file mode 100644
+index 0000000000..31ababa00f
+--- /dev/null
++++ b/backend/src/api/public/v1/packages/getPackage.ts
+@@ -0,0 +1,29 @@
++import type { Request, Response } from 'express'
++import { z } from 'zod'
++
++import { BadRequestError, NotFoundError } from '@crowd/common'
++
++import { ok } from '@/utils/api'
++import { validateOrThrow } from '@/utils/validation'
++
++import { MOCK_DETAILS } from './mockData'
++
++const querySchema = z.object({
++  purl: z.string().trim().min(1),
++})
++
++// TODO: replace with real DB queries once packages DB is wired into the backend
++export async function getPackage(req: Request, res: Response): Promise<void> {
++  const { purl } = validateOrThrow(querySchema, req.query)
++
++  if (!purl.startsWith('pkg:')) {
++    throw new BadRequestError('Invalid purl format: must start with pkg:')
++  }
++
++  const detail = MOCK_DETAILS[purl]
++  if (!detail) {
++    throw new NotFoundError()
++  }
++
++  ok(res, detail)
++}
+diff --git a/backend/src/api/public/v1/packages/getPackagesMetrics.ts b/backend/src/api/public/v1/packages/getPackagesMetrics.ts
+new file mode 100644
+index 0000000000..89f12f2a46
+--- /dev/null
++++ b/backend/src/api/public/v1/packages/getPackagesMetrics.ts
+@@ -0,0 +1,10 @@
++import type { Request, Response } from 'express'
++
++import { ok } from '@/utils/api'
++
++import { MOCK_METRICS } from './mockData'
++
++// TODO: replace with real DB queries once packages DB is wired into the backend
++export async function getPackagesMetrics(req: Request, res: Response): Promise<void> {
++  ok(res, MOCK_METRICS)
++}
+diff --git a/backend/src/api/public/v1/packages/index.ts b/backend/src/api/public/v1/packages/index.ts
+new file mode 100644
+index 0000000000..c082fcf498
+--- /dev/null
++++ b/backend/src/api/public/v1/packages/index.ts
+@@ -0,0 +1,42 @@
++import { Router } from 'express'
++
++import { createRateLimiter } from '@/api/apiRateLimiter'
++// TODO: restore once read:packages + read:stewardships are added to Auth0 staging tenant
++// import { requireScopes } from '@/api/public/middlewares/requireScopes'
++import { safeWrap } from '@/middlewares/errorMiddleware'
++
++// import { SCOPES } from '@/security/scopes'
++import { getPackage } from './getPackage'
++import { getPackagesMetrics } from './getPackagesMetrics'
++import { listPackages } from './listPackages'
++
++const rateLimiter = createRateLimiter({ max: 60, windowMs: 60 * 1000 })
++
++export function packagesRouter(): Router {
++  const router = Router()
++
++  router.use(rateLimiter)
++
++  router.get(
++    '/',
++    // TODO: restore once read:packages + read:stewardships are added to Auth0 staging tenant
++    // requireScopes([SCOPES.READ_PACKAGES, SCOPES.READ_STEWARDSHIPS], 'any'),
++    safeWrap(listPackages),
++  )
++
++  router.get(
++    '/metrics',
++    // TODO: restore once read:packages + read:stewardships are added to Auth0 staging tenant
++    // requireScopes([SCOPES.READ_PACKAGES, SCOPES.READ_STEWARDSHIPS], 'any'),
++    safeWrap(getPackagesMetrics),
++  )
++
++  router.get(
++    '/detail',
++    // TODO: restore once read:packages + read:stewardships are added to Auth0 staging tenant
++    // requireScopes([SCOPES.READ_PACKAGES, SCOPES.READ_STEWARDSHIPS], 'any'),
++    safeWrap(getPackage),
++  )
++
++  return router
++}
+diff --git a/backend/src/api/public/v1/packages/listPackages.ts b/backend/src/api/public/v1/packages/listPackages.ts
+new file mode 100644
+index 0000000000..2077cb0d09
+--- /dev/null
++++ b/backend/src/api/public/v1/packages/listPackages.ts
+@@ -0,0 +1,92 @@
++import type { Request, Response } from 'express'
++import { z } from 'zod'
++
++import { ok } from '@/utils/api'
++import { validateOrThrow } from '@/utils/validation'
++
++import { MOCK_DETAILS, MOCK_PACKAGES } from './mockData'
++
++const DEFAULT_PAGE_SIZE = 20
++const MAX_PAGE_SIZE = 100
++const STALE_MONTHS = 18
++
++const booleanQueryParam = z.preprocess((v) => v === 'true', z.boolean()).default(false)
++
++const lifecycleValues = ['active', 'stable', 'declining', 'abandoned'] as const
++
++const querySchema = z.object({
++  page: z.coerce.number().int().min(1).default(1),
++  pageSize: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
++  ecosystem: z.string().trim().optional(),
++  lifecycle: z.enum(lifecycleValues).optional(),
++  busFactor1Only: booleanQueryParam,
++  staleOnly: booleanQueryParam,
++  unstewardedOnly: booleanQueryParam,
++  sortBy: z.enum(['name', 'health', 'impact', 'openVulns']).default('name'),
++  sortDir: z.enum(['asc', 'desc']).default('asc'),
++})
++
++// TODO: replace with real DB queries once packages DB is wired into the backend
++export async function listPackages(req: Request, res: Response): Promise<void> {
++  const {
++    page,
++    pageSize,
++    ecosystem,
++    lifecycle,
++    busFactor1Only,
++    staleOnly,
++    unstewardedOnly,
++    sortBy,
++    sortDir,
++  } = validateOrThrow(querySchema, req.query)
++
++  const staleThreshold = new Date()
++  staleThreshold.setMonth(staleThreshold.getMonth() - STALE_MONTHS)
++
++  let filtered = MOCK_PACKAGES.filter((p) => {
++    if (ecosystem && p.ecosystem !== ecosystem) return false
++    if (lifecycle && p.lifecycle !== lifecycle) return false
++    if (busFactor1Only && p.maintainerBusFactor !== 1) return false
++    if (unstewardedOnly && p.stewardship !== 'unassigned') return false
++    if (staleOnly) {
++      const lastRelease = MOCK_DETAILS[p.purl]?.general.riskSignals.lastRelease
++      if (!lastRelease || new Date(lastRelease) >= staleThreshold) return false
++    }
++    return true
++  })
++
++  filtered = filtered.sort((a, b) => {
++    let cmp = 0
++    if (sortBy === 'name') {
++      cmp = a.name.localeCompare(b.name)
++    } else if (sortBy === 'health') {
++      cmp = (a.health ?? 0) - (b.health ?? 0)
++    } else if (sortBy === 'impact') {
++      cmp = (a.impact ?? 0) - (b.impact ?? 0)
++    } else if (sortBy === 'openVulns') {
++      const sumA = a.openVulns.low + a.openVulns.medium + a.openVulns.high + a.openVulns.critical
++      const sumB = b.openVulns.low + b.openVulns.medium + b.openVulns.high + b.openVulns.critical
++      cmp = sumA - sumB
++    }
++    return sortDir === 'desc' ? -cmp : cmp
++  })
++
++  const total = filtered.length
++  const start = (page - 1) * pageSize
++  const packages = filtered.slice(start, start + pageSize)
++
++  ok(res, {
++    page,
++    pageSize,
++    total,
++    filters: {
++      ecosystem: ecosystem ?? null,
++      lifecycle: lifecycle ?? null,
++      busFactor1Only,
++      staleOnly,
++      unstewardedOnly,
++    },
++    sort: { by: sortBy, dir: sortDir },
++    packages,
++  })
++}
+diff --git a/backend/src/api/public/v1/packages/mockData.ts b/backend/src/api/public/v1/packages/mockData.ts
+new file mode 100644
+index 0000000000..7f68414fd3
+--- /dev/null
++++ b/backend/src/api/public/v1/packages/mockData.ts
+@@ -0,0 +1,251 @@
++export interface MockPackageListItem {
++  purl: string
++  name: string
++  ecosystem: string
++  health: number
++  impact: number
++  lifecycle: 'active' | 'stable' | 'declining' | 'abandoned'
++  maintainerBusFactor: number
++  openVulns: { low: number; medium: number; high: number; critical: number }
++  stewardship: string
++  steward: null
++}
++
++export interface MockPackageDetail {
++  purl: string
++  name: string
++  ecosystem: string
++  general: {
++    healthScore: {
++      maintainerHealth: number
++      securitySupplyChain: number
++      developmentActivity: number
++      total: number
++    }
++    impact: {
++      impactScore: number
++      downloadsLastMonth: number | null
++      dependentPackages: number
++      dependentRepos: number
++      transitiveReach: string
++    }
++    riskSignals: {
++      lifecycle: string
++      maintainerBusFactor: number
++      lastRelease: string
++      hasSecurityFile: null
++      openSSFScorecard: number
++    }
++  }
++  assessment: Record<string, never>
++  security: {
++    securityContacts: null
++    advisories: Array<{
++      osvId: string
++      severity: 'critical' | 'high' | 'medium' | 'low'
++      resolution: null
++    }>
++    cvd: {
++      isPvrEnabled: null
++      hasSecurityPolicyEnabled: null
++      tier0Steward: null
++      criticalVulnerabilityFlag: boolean
++    }
++  }
++  provenance: {
++    repositoryMapping: { declaredRepo: string; mappingConfidence: number; lastCommitAt: string }
++    supplyChainIntegrity: { buildProvenance: null; signedReleases: null }
++  }
++  history: Record<string, never>
++}
++
++export const MOCK_PACKAGES: MockPackageListItem[] = [
++  {
++    purl: 'pkg:npm/lodash@4.17.21',
++    name: 'lodash',
++    ecosystem: 'npm',
++    health: 18,
++    impact: 71,
++    lifecycle: 'declining',
++    maintainerBusFactor: 1,
++    openVulns: { low: 0, medium: 0, high: 1, critical: 0 },
++    stewardship: 'unassigned',
++    steward: null,
++  },
++  {
++    purl: 'pkg:maven/org.apache.commons/commons-lang3@3.12.0',
++    name: 'commons-lang3',
++    ecosystem: 'maven',
++    health: 62,
++    impact: 88,
++    lifecycle: 'stable',
++    maintainerBusFactor: 3,
++    openVulns: { low: 0, medium: 0, high: 0, critical: 0 },
++    stewardship: 'unassigned',
++    steward: null,
++  },
++  {
++    purl: 'pkg:npm/minimist@1.2.6',
++    name: 'minimist',
++    ecosystem: 'npm',
++    health: 12,
++    impact: 95,
++    lifecycle: 'abandoned',
++    maintainerBusFactor: 1,
++    openVulns: { low: 0, medium: 1, high: 0, critical: 1 },
++    stewardship: 'unassigned',
++    steward: null,
++  },
++]
++
++export const MOCK_DETAILS: Record<string, MockPackageDetail> = {
++  'pkg:npm/lodash@4.17.21': {
++    purl: 'pkg:npm/lodash@4.17.21',
++    name: 'lodash',
++    ecosystem: 'npm',
++    general: {
++      healthScore: {
++        maintainerHealth: 4,
++        securitySupplyChain: 8,
++        developmentActivity: 6,
++        total: 18,
++      },
++      impact: {
++        impactScore: 71,
++        downloadsLastMonth: 52142891,
++        dependentPackages: 142312,
++        dependentRepos: 39104,
++        transitiveReach: 'Top 0.4%',
++      },
++      riskSignals: {
++        lifecycle: 'declining',
++        maintainerBusFactor: 1,
++        lastRelease: '2021-02-20T00:00:00Z',
++        hasSecurityFile: null,
++        openSSFScorecard: 5.2,
++      },
++    },
++    assessment: {},
++    security: {
++      securityContacts: null,
++      advisories: [{ osvId: 'CVE-2021-44906', severity: 'high', resolution: null }],
++      cvd: {
++        isPvrEnabled: null,
++        hasSecurityPolicyEnabled: null,
++        tier0Steward: null,
++        criticalVulnerabilityFlag: false,
++      },
++    },
++    provenance: {
++      repositoryMapping: {
++        declaredRepo: 'https://github.com/lodash/lodash',
++        mappingConfidence: 0.98,
++        lastCommitAt: '2024-09-14T00:00:00Z',
++      },
++      supplyChainIntegrity: { buildProvenance: null, signedReleases: null },
++    },
++    history: {},
++  },
++  'pkg:maven/org.apache.commons/commons-lang3@3.12.0': {
++    purl: 'pkg:maven/org.apache.commons/commons-lang3@3.12.0',
++    name: 'commons-lang3',
++    ecosystem: 'maven',
++    general: {
++      healthScore: {
++        maintainerHealth: 18,
++        securitySupplyChain: 22,
++        developmentActivity: 22,
++        total: 62,
++      },
++      impact: {
++        impactScore: 88,
++        downloadsLastMonth: null,
++        dependentPackages: 89421,
++        dependentRepos: 21033,
++        transitiveReach: 'Top 1.2%',
++      },
++      riskSignals: {
++        lifecycle: 'stable',
++        maintainerBusFactor: 3,
++        lastRelease: '2022-11-05T00:00:00Z',
++        hasSecurityFile: null,
++        openSSFScorecard: 7.1,
++      },
++    },
++    assessment: {},
++    security: {
++      securityContacts: null,
++      advisories: [],
++      cvd: {
++        isPvrEnabled: null,
++        hasSecurityPolicyEnabled: null,
++        tier0Steward: null,
++        criticalVulnerabilityFlag: false,
++      },
++    },
++    provenance: {
++      repositoryMapping: {
++        declaredRepo: 'https://github.com/apache/commons-lang',
++        mappingConfidence: 0.99,
++        lastCommitAt: '2024-10-01T00:00:00Z',
++      },
++      supplyChainIntegrity: { buildProvenance: null, signedReleases: null },
++    },
++    history: {},
++  },
++  'pkg:npm/minimist@1.2.6': {
++    purl: 'pkg:npm/minimist@1.2.6',
++    name: 'minimist',
++    ecosystem: 'npm',
++    general: {
++      healthScore: {
++        maintainerHealth: 2,
++        securitySupplyChain: 4,
++        developmentActivity: 6,
++        total: 12,
++      },
++      impact: {
++        impactScore: 95,
++        downloadsLastMonth: 102381944,
++        dependentPackages: 321042,
++        dependentRepos: 87231,
++        transitiveReach: 'Top 0.1%',
++      },
++      riskSignals: {
++        lifecycle: 'abandoned',
++        maintainerBusFactor: 1,
++        lastRelease: '2022-03-17T00:00:00Z',
++        hasSecurityFile: null,
++        openSSFScorecard: 2.1,
++      },
++    },
++    assessment: {},
++    security: {
++      securityContacts: null,
++      advisories: [
++        { osvId: 'CVE-2021-44906', severity: 'critical', resolution: null },
++        { osvId: 'CVE-2020-7598', severity: 'medium', resolution: null },
++      ],
++      cvd: {
++        isPvrEnabled: null,
++        hasSecurityPolicyEnabled: null,
++        tier0Steward: null,
++        criticalVulnerabilityFlag: true,
++      },
++    },
++    provenance: {
++      repositoryMapping: {
++        declaredRepo: 'https://github.com/minimistjs/minimist',
++        mappingConfidence: 0.97,
++        lastCommitAt: '2022-03-17T00:00:00Z',
++      },
++      supplyChainIntegrity: { buildProvenance: null, signedReleases: null },
++    },
++    history: {},
++  },
++}
++
++export const MOCK_METRICS = {
++  totalPackages: MOCK_PACKAGES.length,
++  criticalPackages: MOCK_PACKAGES.filter((p) => p.openVulns.critical > 0).length,
++}
+diff --git a/backend/src/api/public/v1/packages/openapi.yaml b/backend/src/api/public/v1/packages/openapi.yaml
+new file mode 100644
+index 0000000000..5f5d2936f6
+--- /dev/null
++++ b/backend/src/api/public/v1/packages/openapi.yaml
+@@ -0,0 +1,762 @@
++openapi: 3.1.0
++info:
++  title: CDP Public API — Packages & Stewardship
++  version: 1.0.0
++  description: >
++    Read-only endpoints for the OSSPREY Self Serve program.
++
++
++    **Authentication:** OAuth 2.0 M2M bearer token.
++    Package endpoints require `read:packages` or `read:stewardships`.
++    The batch stewardship endpoint requires `read:stewardships` only.
++
++
++    **V1 constraints:** All stewardship rows are `unassigned`.
++    Write endpoints and state transitions are deferred to v2.
++
++servers:
++  - url: https://cm.lfx.dev/api/v1
++    description: Production
++  - url: https://lf-staging.crowd.dev/api/v1
++    description: Staging
++
++tags:
++  - name: Packages
++    description: Package list and detail.
++  - name: Stewardship
++    description: Stewardship state — individual and batch.
++
++components:
++  securitySchemes:
++    M2MBearer:
++      type: http
++      scheme: bearer
++      bearerFormat: JWT
++
++  schemas:
++    # ── Shared ───────────────────────────────────────────────────────────────────
++
++    Error:
++      type: object
++      required: [error]
++      properties:
++        error:
++          type: object
++          required: [code, message]
++          properties:
++            code:
++              type: string
++              example: NOT_FOUND
++            message:
++              type: string
++              example: Package not found.
++
++    OpenVulns:
++      type: object
++      description: Open vulnerability counts by severity from advisory_packages + advisories.
++      required: [low, medium, high, critical]
++      properties:
++        low:
++          type: integer
++          example: 0
++        medium:
++          type: integer
++          example: 0
++        high:
++          type: integer
++          example: 1
++        critical:
++          type: integer
++          example: 0
++
++    # ── Stewardship ─────────────────────────────────────────────────────────────
++
++    StewardshipStatus:
++      type: string
++      enum:
++        - unassigned
++        - open
++        - assessing
++        - active
++        - needs_attention
++        - escalated
++        - blocked
++        - inactive
++
++    Steward:
++      type: object
++      required: [userId, name, role, assignedAt]
++      properties:
++        userId:
++          type: string
++          description: LFID.
++          example: jdoe
++        name:
++          type: string
++          example: Jonathan R.
++        role:
++          type: string
++          enum: [lead, co_steward]
++        assignedAt:
++          type: string
++          format: date-time
++
++    # Lean shape used in batch response and list items.
++    StewardshipSummary:
++      type: object
++      description: Null if the purl is not found in CDP.
++      required: [name, ecosystem, stewardship, stewards, lastActivityAt, lastActivityDescription]
++      properties:
++        name:
++          type: string
++          example: lodash
++        ecosystem:
++          type: string
++          example: npm
++        lifecycle:
++          type:
++            - string
++            - 'null'
++          enum: [active, stable, declining, abandoned, null]
++        health:
++          type:
++            - integer
++            - 'null'
++          example: 52
++        impact:
++          type:
++            - integer
++            - 'null'
++          example: 94
++        openVulns:
++          oneOf:
++            - $ref: '#/components/schemas/OpenVulns'
++            - type: 'null'
++        stewardship:
++          $ref: '#/components/schemas/StewardshipStatus'
++        stewards:
++          description: Single steward or null. Empty in v1.
++          oneOf:
++            - $ref: '#/components/schemas/Steward'
++            - type: 'null'
++        lastActivityAt:
++          type:
++            - string
++            - 'null'
++          format: date-time
++          description: Null in v1.
++        lastActivityDescription:
++          type:
++            - string
++            - 'null'
++          description: Null in v1.
++
++    # ── Package list item ────────────────────────────────────────────────────────
++
++    PackageListItem:
++      type: object
++      required: [purl, name, ecosystem]
++      properties:
++        purl:
++          type: string
++          description: Used to call GET /packages/detail?purl= when a row is clicked.
++          example: pkg:npm/lodash
++        name:
++          type: string
++          example: lodash
++        ecosystem:
++          type: string
++          example: npm
++        health:
++          type:
++            - integer
++            - 'null'
++          example: 18
++        impact:
++          type:
++            - integer
++            - 'null'
++          example: 71
++        lifecycle:
++          type:
++            - string
++            - 'null'
++          enum: [active, stable, declining, abandoned, null]
++        maintainerBusFactor:
++          type:
++            - integer
++            - 'null'
++          example: 1
++        openVulns:
++          oneOf:
++            - $ref: '#/components/schemas/OpenVulns'
++            - type: 'null'
++        stewardship:
++          $ref: '#/components/schemas/StewardshipStatus'
++        steward:
++          description: Single assigned steward or null.
++          oneOf:
++            - $ref: '#/components/schemas/Steward'
++            - type: 'null'
++
++    # ── Package detail ───────────────────────────────────────────────────────────
++
++    Advisory:
++      type: object
++      required: [osvId, severity]
++      properties:
++        osvId:
++          type: string
++          description: GHSA or CVE identifier.
++          example: CVE-2021-44906
++        severity:
++          type: string
++          enum: [critical, high, medium, low]
++        resolution:
++          type:
++            - string
++            - 'null'
++          description: Resolution status. TBD.
++
++    SecurityContact:
++      type: object
++      required: [name]
++      properties:
++        name:
++          type:
++            - string
++            - 'null'
++        email:
++          type:
++            - string
++            - 'null'
++          format: email
++
++    PackageDetail:
++      type: object
++      required: [purl, name, ecosystem, general, assessment, security, provenance, history]
++      properties:
++        purl:
++          type: string
++          example: pkg:npm/lodash
++        name:
++          type: string
++          example: lodash
++        ecosystem:
++          type: string
++          example: npm
++        general:
++          type: object
++          properties:
++            healthScore:
++              type:
++                - object
++                - 'null'
++              properties:
++                maintainerHealth:
++                  type:
++                    - integer
++                    - 'null'
++                  example: 4
++                securitySupplyChain:
++                  type:
++                    - integer
++                    - 'null'
++                  example: 8
++                developmentActivity:
++                  type:
++                    - integer
++                    - 'null'
++                  example: 6
++                total:
++                  type:
++                    - integer
++                    - 'null'
++                  example: 18
++            impact:
++              type:
++                - object
++                - 'null'
++              properties:
++                impactScore:
++                  type:
++                    - integer
++                    - 'null'
++                  example: 71
++                downloadsLastMonth:
++                  type:
++                    - integer
++                    - 'null'
++                  description: Null for Maven (Sonatype data not yet ingested).
++                  example: 52142891
++                dependentPackages:
++                  type:
++                    - integer
++                    - 'null'
++                  example: 142312
++                dependentRepos:
++                  type:
++                    - integer
++                    - 'null'
++                  example: 39104
++                transitiveReach:
++                  type:
++                    - string
++                    - 'null'
++                  example: 'Top 0.4%'
++            riskSignals:
++              type:
++                - object
++                - 'null'
++              properties:
++                lifecycle:
++                  type:
++                    - string
++                    - 'null'
++                  enum: [active, stable, declining, abandoned, null]
++                maintainerBusFactor:
++                  type:
++                    - integer
++                    - 'null'
++                  example: 1
++                lastRelease:
++                  type:
++                    - string
++                    - 'null'
++                  format: date-time
++                hasSecurityFile:
++                  type:
++                    - boolean
++                    - 'null'
++                openSSFScorecard:
++                  type:
++                    - number
++                    - 'null'
++                  format: float
++                  example: 5.2
++        assessment:
++          type: object
++          description: Stewardship assessment data. Empty in v1 — assessment flow deferred to v2.
++        security:
++          type: object
++          properties:
++            securityContacts:
++              type:
++                - array
++                - 'null'
++              items:
++                $ref: '#/components/schemas/SecurityContact'
++            advisories:
++              type: array
++              items:
++                $ref: '#/components/schemas/Advisory'
++            cvd:
++              type: object
++              description: Coordinated Vulnerability Disclosure readiness signals.
++              properties:
++                isPvrEnabled:
++                  type:
++                    - boolean
++                    - 'null'
++                  description: Private Vulnerability Reporting enabled. Null in v1.
++                hasSecurityPolicyEnabled:
++                  type:
++                    - boolean
++                    - 'null'
++                  description: SECURITY.md present in repo. Null until enricher captures this.
++                tier0Steward:
++                  type:
++                    - string
++                    - 'null'
++                  description: Name of the Tier 0 steward if assigned. Null in v1.
++                criticalVulnerabilityFlag:
++                  type:
++                    - boolean
++                    - 'null'
++                  description: True if any open advisory has cvss >= 7.0.
++        provenance:
++          type: object
++          properties:
++            repositoryMapping:
++              type:
++                - object
++                - 'null'
++              properties:
++                declaredRepo:
++                  type:
++                    - string
++                    - 'null'
++                  format: uri
++                  example: https://github.com/lodash/lodash
++                mappingConfidence:
++                  type:
++                    - number
++                    - 'null'
++                  format: float
++                  example: 0.98
++                lastCommitAt:
++                  type:
++                    - string
++                    - 'null'
++                  format: date-time
++            supplyChainIntegrity:
++              type: object
++              description: All fields null in v1 — separate ingestion workstream required.
++              properties:
++                buildProvenance:
++                  type:
++                    - string
++                    - 'null'
++                signedReleases:
++                  type:
++                    - string
++                    - 'null'
++        history:
++          type: object
++          description: Package history data. Empty in v1.
++
++    # ── Metrics ──────────────────────────────────────────────────────────────────
++
++    PackagesMetrics:
++      type: object
++      required: [totalPackages, criticalPackages]
++      properties:
++        totalPackages:
++          type: integer
++          example: 0
++        criticalPackages:
++          type: integer
++          example: 0
++
++# ──────────────────────────────────────────────────────────────────────────────
++# Paths
++# ──────────────────────────────────────────────────────────────────────────────
++paths:
++  /packages:
++    get:
++      operationId: listPackages
++      summary: List packages
++      tags:
++        - Packages
++      security:
++        - M2MBearer:
++            - read:packages
++            - read:stewardships
++      parameters:
++        - name: page
++          in: query
++          schema:
++            type: integer
++            minimum: 1
++            default: 1
++        - name: pageSize
++          in: query
++          schema:
++            type: integer
++            minimum: 1
++            maximum: 100
++            default: 20
++        - name: ecosystem
++          in: query
++          schema:
++            type: string
++        - name: lifecycle
++          in: query
++          schema:
++            type: string
++            enum: [active, stable, declining, abandoned]
++        - name: busFactor1Only
++          in: query
++          schema:
++            type: boolean
++            default: false
++          description: Return only packages with bus factor = 1.
++        - name: staleOnly
++          in: query
++          schema:
++            type: boolean
++            default: false
++          description: Return only packages with no release in >= 18 months.
++        - name: unstewardedOnly
++          in: query
++          schema:
++            type: boolean
++            default: false
++          description: Return only packages with stewardship = unassigned.
++        - name: sortBy
++          in: query
++          schema:
++            type: string
++            enum: [name, health, impact, openVulns]
++            default: name
++        - name: sortDir
++          in: query
++          schema:
++            type: string
++            enum: [asc, desc]
++            default: asc
++      responses:
++        '200':
++          description: Paginated list of packages.
++          content:
++            application/json:
++              schema:
++                type: object
++                required: [page, pageSize, total, filters, sort, packages]
++                properties:
++                  page:
++                    type: integer
++                  pageSize:
++                    type: integer
++                  total:
++                    type: integer
++                  filters:
++                    type: object
++                    properties:
++                      ecosystem:
++                        type:
++                          - string
++                          - 'null'
++                      lifecycle:
++                        type:
++                          - string
++                          - 'null'
++                      busFactor1Only:
++                        type: boolean
++                      staleOnly:
++                        type: boolean
++                      unstewardedOnly:
++                        type: boolean
++                  sort:
++                    type: object
++                    properties:
++                      by:
++                        type: string
++                      dir:
++                        type: string
++                  packages:
++                    type: array
++                    items:
++                      $ref: '#/components/schemas/PackageListItem'
++        '400':
++          description: Validation error (e.g. invalid query parameters).
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '401':
++          description: Missing or invalid bearer token.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '403':
++          description: Insufficient scopes.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++
++  /packages/metrics:
++    get:
++      operationId: getPackagesMetrics
++      summary: Overview metrics for the list page header
++      tags:
++        - Packages
++      security:
++        - M2MBearer:
++            - read:packages
++            - read:stewardships
++      responses:
++        '200':
++          description: Aggregate package metrics.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/PackagesMetrics'
++        '401':
++          description: Missing or invalid bearer token.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '403':
++          description: Insufficient scopes.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++
++  /packages/detail:
++    get:
++      operationId: getPackage
++      summary: Get full package detail
++      description: >
++        Returns data for the drawer's Overview, Security, and Provenance tabs.
++        Pass the canonical purl as a query parameter — no URL-encoding needed.
++        Example: `?purl=pkg:npm/lodash@4.17.21`.
++      tags:
++        - Packages
++      security:
++        - M2MBearer:
++            - read:packages
++            - read:stewardships
++      parameters:
++        - name: purl
++          in: query
++          required: true
++          schema:
++            type: string
++          example: 'pkg:npm/lodash@4.17.21'
++      responses:
++        '200':
++          description: Package found.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/PackageDetail'
++              example:
++                purl: pkg:npm/lodash
++                name: lodash
++                ecosystem: npm
++                general:
++                  healthScore:
++                    maintainerHealth: 4
++                    securitySupplyChain: 8
++                    developmentActivity: 6
++                    total: 18
++                  impact:
++                    impactScore: 71
++                    downloadsLastMonth: 52142891
++                    dependentPackages: 142312
++                    dependentRepos: 39104
++                    transitiveReach: 'Top 0.4%'
++                  riskSignals:
++                    lifecycle: declining
++                    maintainerBusFactor: 1
++                    lastRelease: '2021-02-20T00:00:00Z'
++                    hasSecurityFile: null
++                    openSSFScorecard: 5.2
++                assessment: {}
++                security:
++                  securityContacts: null
++                  advisories:
++                    - osvId: CVE-2021-44906
++                      severity: high
++                      resolution: null
++                  cvd:
++                    isPvrEnabled: null
++                    hasSecurityPolicyEnabled: null
++                    tier0Steward: null
++                    criticalVulnerabilityFlag: true
++                provenance:
++                  repositoryMapping:
++                    declaredRepo: https://github.com/lodash/lodash
++                    mappingConfidence: 0.98
++                    lastCommitAt: '2024-09-14T00:00:00Z'
++                  supplyChainIntegrity:
++                    buildProvenance: null
++                    signedReleases: null
++                history: {}
++        '404':
++          description: Package not found.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '401':
++          description: Missing or invalid bearer token.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '403':
++          description: Insufficient scopes.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++
++  /packages:batch-stewardship:
++    post:
++      operationId: batchGetStewardship
++      summary: Batch stewardship state for a list of purls
++      description: >
++        Returns lean stewardship state for up to 100 purls in one request.
++        Purls not found in CDP return `null`.
++      tags:
++        - Stewardship
++      security:
++        - M2MBearer:
++            - read:stewardships
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              type: object
++              required: [purls]
++              properties:
++                purls:
++                  type: array
++                  items:
++                    type: string
++                  minItems: 1
++                  maxItems: 100
++                  example:
++                    - pkg:npm/lodash
++                    - pkg:npm/express
++                    - pkg:pypi/requests
++      responses:
++        '200':
++          description: >
++            Stewardship state keyed by purl.
++            Unknown or invalid purls return `null`.
++          content:
++            application/json:
++              schema:
++                type: object
++                required: [packages]
++                properties:
++                  packages:
++                    type: object
++                    additionalProperties:
++                      oneOf:
++                        - $ref: '#/components/schemas/StewardshipSummary'
++                        - type: 'null'
++              example:
++                packages:
++                  pkg:npm/lodash@4.17.21:
++                    name: lodash
++                    ecosystem: npm
++                    lifecycle: declining
++                    health: 18
++                    impact: 71
++                    openVulns:
++                      low: 0
++                      medium: 0
++                      high: 1
++                      critical: 0
++                    stewardship: unassigned
++                    stewards: null
++                    lastActivityAt: null
++                    lastActivityDescription: null
++                  pkg:pypi/requests: null
++        '400':
++          description: Validation error (e.g. more than 100 purls).
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '401':
++          description: Missing or invalid bearer token.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '403':
++          description: Insufficient scopes.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
+diff --git a/backend/src/security/scopes.ts b/backend/src/security/scopes.ts
+index 6254d524b2..c60542d2ee 100644
+--- a/backend/src/security/scopes.ts
++++ b/backend/src/security/scopes.ts
+@@ -10,6 +10,8 @@ export const SCOPES = {
+   READ_PROJECT_AFFILIATIONS: 'read:project-affiliations',
+   WRITE_PROJECT_AFFILIATIONS: 'write:project-affiliations',
+   READ_AFFILIATIONS: 'read:affiliations',
++  READ_PACKAGES: 'read:packages',
++  READ_STEWARDSHIPS: 'read:stewardships',
+ } as const
+ 
+ export type Scope = (typeof SCOPES)[keyof typeof SCOPES]

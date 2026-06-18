@@ -1,0 +1,344 @@
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index f0940720a1..510edcbea3 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1315,6 +1315,9 @@ importers:
+       '@crowd/logging':
+         specifier: workspace:*
+         version: link:../../libs/logging
++      '@crowd/temporal':
++        specifier: workspace:*
++        version: link:../../libs/temporal
+       '@dsnp/parquetjs':
+         specifier: ^1.7.0
+         version: 1.8.7(bufferutil@4.0.8)(utf-8-validate@5.0.10)
+diff --git a/services/apps/packages_worker/package.json b/services/apps/packages_worker/package.json
+index 258426e492..611fea1e64 100644
+--- a/services/apps/packages_worker/package.json
++++ b/services/apps/packages_worker/package.json
+@@ -2,9 +2,9 @@
+   "name": "@crowd/packages-worker",
+   "private": true,
+   "scripts": {
+-    "start:criticality-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=criticality-worker tsx src/bin/criticality-worker.ts",
+-    "dev:criticality-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=criticality-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9237 src/bin/criticality-worker.ts",
+-    "dev:criticality-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=criticality-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9237 src/bin/criticality-worker.ts",
++    "start:criticality-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker SERVICE=criticality-worker tsx src/bin/criticality-worker.ts",
++    "dev:criticality-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker SERVICE=criticality-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9237 src/bin/criticality-worker.ts",
++    "dev:criticality-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=packages-worker SERVICE=criticality-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9237 src/bin/criticality-worker.ts",
+     "run:pagerank": "tsx src/criticality/run-pagerank.ts",
+     "run:impact": "tsx src/criticality/run-impact.ts",
+     "dev:pagerank": "tsx --expose-gc src/criticality/run-pagerank.ts",
+@@ -14,25 +14,28 @@
+     "start:dockerhub-sync": "SERVICE=dockerhub-sync tsx src/bin/dockerhub-sync.ts",
+     "dev:dockerhub-sync": "SERVICE=dockerhub-sync LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9239 src/bin/dockerhub-sync.ts",
+     "dev:dockerhub-sync:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=dockerhub-sync LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9239 src/bin/dockerhub-sync.ts",
+-    "start:bq-dataset-ingest": "CROWD_TEMPORAL_TASKQUEUE=bq-dataset-ingest CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=bq-dataset-ingest tsx src/bin/bq-dataset-ingest.ts",
+-    "dev:bq-dataset-ingest": "CROWD_TEMPORAL_TASKQUEUE=bq-dataset-ingest CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=bq-dataset-ingest nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9235 src/bin/bq-dataset-ingest.ts",
+-    "dev:bq-dataset-ingest:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=bq-dataset-ingest CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=bq-dataset-ingest nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9235 src/bin/bq-dataset-ingest.ts",
++    "start:bq-dataset-ingest": "CROWD_TEMPORAL_TASKQUEUE=bq-dataset-ingest SERVICE=bq-dataset-ingest tsx src/bin/bq-dataset-ingest.ts",
++    "dev:bq-dataset-ingest": "CROWD_TEMPORAL_TASKQUEUE=bq-dataset-ingest SERVICE=bq-dataset-ingest nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9235 src/bin/bq-dataset-ingest.ts",
++    "dev:bq-dataset-ingest:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=bq-dataset-ingest SERVICE=bq-dataset-ingest nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9235 src/bin/bq-dataset-ingest.ts",
+     "export-to-bucket": "SERVICE=bq-dataset-ingest tsx src/scripts/exportToBucket.ts",
+     "export-to-bucket:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=bq-dataset-ingest tsx src/scripts/exportToBucket.ts",
+-    "start:npm-worker": "CROWD_TEMPORAL_TASKQUEUE=npm-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=npm-worker tsx src/bin/npm-worker.ts",
+-    "dev:npm-worker": "CROWD_TEMPORAL_TASKQUEUE=npm-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=npm-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/npm-worker.ts",
+-    "dev:npm-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=npm-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=npm-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/npm-worker.ts",
+-    "start:osv-worker": "CROWD_TEMPORAL_TASKQUEUE=osv-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=osv-worker tsx src/bin/osv-worker.ts",
+-    "dev:osv-worker": "CROWD_TEMPORAL_TASKQUEUE=osv-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=osv-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9238 src/bin/osv-worker.ts",
+-    "dev:osv-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=osv-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=osv-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9238 src/bin/osv-worker.ts",
+-    "start:maven-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=maven-worker tsx src/bin/maven-worker.ts",
+-    "dev:maven-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=maven-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/maven-worker.ts",
+-    "dev:maven-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=maven-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/maven-worker.ts",
++    "trigger-bootstrap": "SERVICE=bq-dataset-ingest tsx src/scripts/triggerBootstrap.ts",
++    "trigger-bootstrap:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=bq-dataset-ingest tsx src/scripts/triggerBootstrap.ts",
++    "start:npm-worker": "CROWD_TEMPORAL_TASKQUEUE=npm-worker SERVICE=npm-worker tsx src/bin/npm-worker.ts",
++    "dev:npm-worker": "CROWD_TEMPORAL_TASKQUEUE=npm-worker SERVICE=npm-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/npm-worker.ts",
++    "dev:npm-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=npm-worker SERVICE=npm-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/npm-worker.ts",
++    "start:osv-worker": "CROWD_TEMPORAL_TASKQUEUE=osv-worker SERVICE=osv-worker tsx src/bin/osv-worker.ts",
++    "dev:osv-worker": "CROWD_TEMPORAL_TASKQUEUE=osv-worker SERVICE=osv-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9238 src/bin/osv-worker.ts",
++    "dev:osv-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=osv-worker SERVICE=osv-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9238 src/bin/osv-worker.ts",
++    "start:maven-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker SERVICE=maven-worker tsx src/bin/maven-worker.ts",
++    "dev:maven-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker SERVICE=maven-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/maven-worker.ts",
++    "dev:maven-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=packages-worker SERVICE=maven-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/maven-worker.ts",
+     "backfill:maven": "SERVICE=maven tsx src/bin/maven-backfill.ts",
+     "backfill:maven:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=maven LOG_LEVEL=info tsx src/bin/maven-backfill.ts",
+     "backfill:stewardship": "SERVICE=stewardship-backfill tsx src/bin/stewardship-backfill.ts",
+     "backfill:stewardship:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=stewardship-backfill LOG_LEVEL=info tsx src/bin/stewardship-backfill.ts",
+-    "monitor:osspckgs:local": "bash -c 'set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && node ../../../scripts/monitor-osspckgs.mjs'",
++    "monitor:osspckgs": "SERVICE=bq-dataset-ingest tsx src/scripts/monitorOsspckgs.ts",
++    "monitor:osspckgs:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=bq-dataset-ingest tsx src/scripts/monitorOsspckgs.ts",
+     "lint": "npx eslint --ext .ts src --max-warnings=0",
+     "format": "npx prettier --write \"src/**/*.ts\"",
+     "format-check": "npx prettier --check .",
+@@ -42,6 +45,7 @@
+   "dependencies": {
+     "@crowd/archetype-standard": "workspace:*",
+     "@crowd/archetype-worker": "workspace:*",
++    "@crowd/temporal": "workspace:*",
+     "@crowd/common": "workspace:*",
+     "@crowd/data-access-layer": "workspace:*",
+     "@crowd/database": "workspace:*",
+diff --git a/services/apps/packages_worker/src/deps-dev/README.md b/services/apps/packages_worker/src/deps-dev/README.md
+new file mode 100644
+index 0000000000..8e283a9e4e
+--- /dev/null
++++ b/services/apps/packages_worker/src/deps-dev/README.md
+@@ -0,0 +1,75 @@
++# bq-dataset-ingest — BQ → GCS → Postgres pipeline
++
++Ingests public BigQuery datasets (deps.dev, OpenSSF Scorecard) into the
++packages database via a BQ export → GCS Parquet → staging → merge pipeline.
++Runs on the `bq-dataset-ingest` Temporal task queue.
++
++## How to run
++
++```bash
++# from services/apps/packages_worker
++
++# local dev (hot-reload, loads backend/.env.*.local)
++pnpm dev:bq-dataset-ingest:local
++
++# prod-style start
++pnpm start:bq-dataset-ingest
++
++# trigger a bootstrap run manually
++pnpm trigger-bootstrap:local [full|incremental] [ECOSYSTEMS] [options]
++pnpm trigger-bootstrap       [full|incremental] [ECOSYSTEMS] [options]
++
++# monitor active and recent jobs
++pnpm monitor:osspckgs:local
++pnpm monitor:osspckgs
++```
++
++See `src/scripts/triggerBootstrap.ts --help` for full options.
++
++## BQ byte-ceiling overrides
++
++Each job kind has a hardcoded `maxBytesGb` ceiling checked via a BQ dry-run
++before the real export fires. If the dry-run exceeds the ceiling the activity
++fails immediately (no BQ cost incurred).
++
++Every ceiling can be overridden at runtime via an env variable — useful when a
++table grows past the default ceiling without requiring a code deploy:
++
++```
++BQ_DATASET_INGEST_<KIND>_MAX_BQ_GB=<number>           # applies to all sync modes
++BQ_DATASET_INGEST_<KIND>_<SYNCMODE>_MAX_BQ_GB=<number> # mode-specific, takes precedence
++```
++
++where `<KIND>` is the job kind in `UPPER_SNAKE_CASE` and `<SYNCMODE>` is `FULL` or `INCREMENTAL`.
++The mode-specific key takes precedence over the generic key. Value must be a positive finite number.
++
++**When adding a new job kind, add a row to this table.**
++
++| Env var override                                   | Default (GB) | Job kind               | Notes                                                     |
++| -------------------------------------------------- | -----------: | ---------------------- | --------------------------------------------------------- |
++| `BQ_DATASET_INGEST_PACKAGES_FULL_MAX_BQ_GB`        |         6000 | `packages`             | Full only (set in `ingestPackages.ts`)                    |
++| `BQ_DATASET_INGEST_PACKAGES_INCREMENTAL_MAX_BQ_GB` |          400 | `packages`             | Incremental only (set in `ingestPackages.ts`)             |
++| `BQ_DATASET_INGEST_VERSIONS_MAX_BQ_GB`             |          400 | `versions`             |                                                           |
++| `BQ_DATASET_INGEST_PACKAGE_DEPENDENCIES_MAX_BQ_GB` |        10000 | `package_dependencies` | Incremental always scans ~2 full-day partitions (~3.85TB) |
++| `BQ_DATASET_INGEST_REPOS_MAX_BQ_GB`                |         2000 | `repos`                |                                                           |
++| `BQ_DATASET_INGEST_PACKAGE_REPOS_MAX_BQ_GB`        |         2000 | `package_repos`        |                                                           |
++| `BQ_DATASET_INGEST_ADVISORIES_MAX_BQ_GB`           |           10 | `advisories`           |                                                           |
++| `BQ_DATASET_INGEST_ADVISORY_PACKAGES_MAX_BQ_GB`    |         1500 | `advisory_packages`    |                                                           |
++| `BQ_DATASET_INGEST_DEPENDENT_COUNTS_MAX_BQ_GB`     |         2000 | `dependent_counts`     |                                                           |
++| `BQ_DATASET_INGEST_SCORECARD_REPOS_MAX_BQ_GB`      |           50 | `scorecard_repos`      |                                                           |
++| `BQ_DATASET_INGEST_SCORECARD_CHECKS_MAX_BQ_GB`     |          500 | `scorecard_checks`     |                                                           |
++
++The override logic lives in `src/deps-dev/activities/bqExportToGcs.ts`.
++
++## Environment variables
++
++| Variable                       | Required  | Purpose                                                                                            |
++| ------------------------------ | --------- | -------------------------------------------------------------------------------------------------- |
++| `OSSPCKGS_GCP_PROJECT`         | yes       | GCP project ID for BQ and GCS                                                                      |
++| `OSSPCKGS_GCS_BUCKET`          | yes       | GCS bucket for Parquet exports                                                                     |
++| `OSSPCKGS_GCP_CREDENTIALS_B64` | yes       | Base64-encoded GCP service account JSON                                                            |
++| `OSSPCKGS_DEPS_TABLE`          | no        | Set to `B` to use `DependenciesLatest` (ADR-0003 Option B) instead of `DependencyGraphEdgesLatest` |
++| `CROWD_TEMPORAL_SERVER_URL`    | yes       | Temporal server address                                                                            |
++| `CROWD_TEMPORAL_NAMESPACE`     | yes       | Temporal namespace (overrides `backend-config` default)                                            |
++| `CROWD_TEMPORAL_CERTIFICATE`   | prod only | Base64-encoded mTLS client certificate                                                             |
++| `CROWD_TEMPORAL_PRIVATE_KEY`   | prod only | Base64-encoded mTLS private key                                                                    |
+diff --git a/services/apps/packages_worker/src/deps-dev/activities/bqExportToGcs.ts b/services/apps/packages_worker/src/deps-dev/activities/bqExportToGcs.ts
+index 0b9399e265..da5c89c2cc 100644
+--- a/services/apps/packages_worker/src/deps-dev/activities/bqExportToGcs.ts
++++ b/services/apps/packages_worker/src/deps-dev/activities/bqExportToGcs.ts
+@@ -150,7 +150,24 @@ export async function bqExportToGcs(input: BqExportToGcsInput): Promise<BqExport
+   const dryRunBytes = Number(dryRunJob.metadata.statistics.totalBytesProcessed ?? 0)
+   log.info({ jobKind, dryRunBytes, maxBytesGb }, 'BQ dry-run complete')
+ 
+-  const ceiling = maxBytesGb * 1e9
++  // Override table is in src/deps-dev/README.md — update it when adding new job kinds.
++  // Mode-specific key takes precedence over the generic key (needed for kinds like "packages"
++  // that have separate full/incremental ceilings: BQ_DATASET_INGEST_PACKAGES_FULL_MAX_BQ_GB).
++  const baseKey = `BQ_DATASET_INGEST_${jobKind.toUpperCase().replace(/-/g, '_')}`
++  const modeKey = `${baseKey}_${syncMode.toUpperCase()}_MAX_BQ_GB`
++  const genericKey = `${baseKey}_MAX_BQ_GB`
++  const activeKey = process.env[modeKey] !== undefined ? modeKey : genericKey
++  const envOverride = process.env[activeKey]
++  if (envOverride !== undefined) {
++    const parsed = Number(envOverride)
++    if (!isFinite(parsed) || parsed <= 0) {
++      throw new Error(
++        `Invalid env ${activeKey}="${envOverride}" — must be a positive finite number`,
++      )
++    }
++  }
++  const effectiveMaxBytesGb = envOverride !== undefined ? Number(envOverride) : maxBytesGb
++  const ceiling = effectiveMaxBytesGb * 1e9
+   if (dryRunBytes > ceiling) {
+     throw new Error(
+       `BQ dry-run for ${jobKind} reports ${dryRunBytes} bytes > ceiling ${ceiling} — aborting`,
+diff --git a/services/apps/packages_worker/src/deps-dev/workflows/ingestDependencies.ts b/services/apps/packages_worker/src/deps-dev/workflows/ingestDependencies.ts
+index 27db7d3472..cb19d55485 100644
+--- a/services/apps/packages_worker/src/deps-dev/workflows/ingestDependencies.ts
++++ b/services/apps/packages_worker/src/deps-dev/workflows/ingestDependencies.ts
+@@ -180,7 +180,7 @@ export async function ingestDependencies(opts: {
+     runId: opts.runId,
+     syncMode: opts.syncMode,
+     snapshotAt: opts.today,
+-    maxBytesGb: 3000,
++    maxBytesGb: 10000,
+     reuseExports: opts.reuseExports,
+     exportName: opts.exportName,
+   })
+diff --git a/services/apps/packages_worker/src/scorecard/queries/scorecardSql.ts b/services/apps/packages_worker/src/scorecard/queries/scorecardSql.ts
+index cfa7b4c21c..77edca57af 100644
+--- a/services/apps/packages_worker/src/scorecard/queries/scorecardSql.ts
++++ b/services/apps/packages_worker/src/scorecard/queries/scorecardSql.ts
+@@ -1,5 +1,3 @@
+-import { SCORECARD_DATASET } from '../../deps-dev/config'
+-
+ export const SCORECARD_REPOS_SQL = `
+ SELECT
+   CASE
+@@ -8,7 +6,7 @@ SELECT
+   END AS repo_url,
+   score,
+   date AS scanned_at
+-FROM \`${SCORECARD_DATASET}.scorecard-v2_latest\`
++FROM \`openssf.scorecardcron.scorecard-v2_latest\`
+ WHERE repo.name IS NOT NULL
+ `
+ 
+@@ -21,7 +19,7 @@ SELECT
+   c.name   AS check_name,
+   c.score  AS check_score,
+   c.reason AS check_reason
+-FROM \`${SCORECARD_DATASET}.scorecard-v2_latest\` r,
++FROM \`openssf.scorecardcron.scorecard-v2_latest\` r,
+ UNNEST(r.checks) AS c
+ WHERE r.repo.name IS NOT NULL
+ `
+diff --git a/services/apps/packages_worker/src/scorecard/workflows/ingestScorecard.ts b/services/apps/packages_worker/src/scorecard/workflows/ingestScorecard.ts
+index ea50b67ace..de4b2773a2 100644
+--- a/services/apps/packages_worker/src/scorecard/workflows/ingestScorecard.ts
++++ b/services/apps/packages_worker/src/scorecard/workflows/ingestScorecard.ts
+@@ -21,7 +21,7 @@ const { gcsParquetToStaging } = proxyActivities<typeof depsDevActivities>({
+ 
+ const { mergeStagingToTable } = proxyActivities<typeof depsDevActivities>({
+   startToCloseTimeout: '30 minutes',
+-  retry: { maximumAttempts: 1 },
++  retry: { maximumAttempts: 3, initialInterval: '30 seconds', backoffCoefficient: 2 },
+ })
+ 
+ const SCORECARD_REPOS_STAGING_TABLE = 'staging.osspckgs_scorecard_repos_raw'
+@@ -50,8 +50,19 @@ SET scorecard_score = CASE
+     END,
+     scorecard_last_run_at = s.scanned_at::timestamptz,
+     updated_at = NOW()
+-FROM staging.osspckgs_scorecard_repos_raw s
++FROM (SELECT * FROM staging.osspckgs_scorecard_repos_raw ORDER BY repo_url) s
+ WHERE r.url = s.repo_url
++  AND (
++    r.scorecard_score IS DISTINCT FROM CASE
++      WHEN s.score IS NULL
++        OR s.score = 'NaN'::float8
++        OR s.score = 'Infinity'::float8
++        OR s.score = '-Infinity'::float8
++      THEN NULL
++      ELSE s.score::numeric(3,1)
++    END
++    OR r.scorecard_last_run_at IS DISTINCT FROM s.scanned_at::timestamptz
++  )
+ `
+ 
+ const SCORECARD_CHECKS_STAGING_TABLE = 'staging.osspckgs_scorecard_checks_raw'
+@@ -73,7 +84,11 @@ SELECT r.id,
+        s.check_name,
+        NULLIF(s.check_score, -1)::numeric(3,1),
+        s.check_reason
+-FROM staging.osspckgs_scorecard_checks_raw s
++FROM (
++  SELECT DISTINCT ON (repo_url, check_name) repo_url, check_name, check_score, check_reason
++  FROM staging.osspckgs_scorecard_checks_raw
++  ORDER BY repo_url, check_name, check_score DESC NULLS LAST
++) s
+ JOIN repos r ON r.url = s.repo_url
+ ON CONFLICT (repo_id, check_name) DO UPDATE SET
+   score      = EXCLUDED.score,
+@@ -95,7 +110,7 @@ export async function ingestScorecard(opts: {
+     runId: opts.runId,
+     syncMode: 'full',
+     snapshotAt: null,
+-    maxBytesGb: 10,
++    maxBytesGb: 50,
+     reuseExports: opts.reuseExports,
+     exportName: opts.exportName,
+   })
+@@ -166,7 +181,7 @@ export async function ingestScorecard(opts: {
+     runId: opts.runId,
+     syncMode: 'full',
+     snapshotAt: null,
+-    maxBytesGb: 200,
++    maxBytesGb: 500,
+     reuseExports: opts.reuseExports,
+     exportName: opts.exportName,
+   })
+diff --git a/services/apps/packages_worker/src/scripts/triggerBootstrap.ts b/services/apps/packages_worker/src/scripts/triggerBootstrap.ts
+index 39854788e4..cb738ba1d3 100644
+--- a/services/apps/packages_worker/src/scripts/triggerBootstrap.ts
++++ b/services/apps/packages_worker/src/scripts/triggerBootstrap.ts
+@@ -1,4 +1,4 @@
+-import { Client, Connection } from '@temporalio/client'
++import { TEMPORAL_CONFIG, getTemporalClient } from '@crowd/temporal'
+ 
+ import { bootstrapOsspckgs } from '../deps-dev/workflows'
+ 
+@@ -115,15 +115,13 @@ async function main(): Promise<void> {
+     }
+   }
+ 
+-  const serverUrl = process.env.CROWD_TEMPORAL_SERVER_URL
+-  const namespace = process.env.CROWD_TEMPORAL_NAMESPACE
+-  if (!serverUrl || !namespace) {
++  const cfg = TEMPORAL_CONFIG()
++  if (!cfg.serverUrl || !cfg.namespace) {
+     console.error('Missing CROWD_TEMPORAL_SERVER_URL or CROWD_TEMPORAL_NAMESPACE')
+     process.exit(1)
+   }
+ 
+-  const connection = await Connection.connect({ address: serverUrl })
+-  const client = new Client({ connection, namespace })
++  const client = await getTemporalClient(cfg)
+ 
+   const ecosystemSuffix = ecosystems ? `-${ecosystems.join('-').toLowerCase()}` : ''
+   const reuseSuffix = reuseExports ? '-reuse' : ''
+@@ -144,10 +142,11 @@ async function main(): Promise<void> {
+   console.log(
+     `Started workflow ${handle.workflowId}${ecosystems ? ` (ecosystems: ${ecosystems.join(', ')})` : ''}${flags.length ? ` [${flags.join(' ')}]` : ''}`,
+   )
+-  await connection.close()
+ }
+ 
+-main().catch((err) => {
+-  console.error('Failed to trigger bootstrap:', err)
+-  process.exit(1)
+-})
++main()
++  .then(() => process.exit(0))
++  .catch((err) => {
++    console.error('Failed to trigger bootstrap:', err)
++    process.exit(1)
++  })

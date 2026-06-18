@@ -1,0 +1,18 @@
+diff --git a/services/apps/data_sink_worker/src/service/activity.service.ts b/services/apps/data_sink_worker/src/service/activity.service.ts
+index 48250bd0e7..954e56db45 100644
+--- a/services/apps/data_sink_worker/src/service/activity.service.ts
++++ b/services/apps/data_sink_worker/src/service/activity.service.ts
+@@ -646,6 +646,13 @@ export default class ActivityService extends LoggerBase {
+       `[ACTIVITY] We still have ${relevantPayloads.length} activities left to process after finding segments!`,
+     )
+ 
++    // relevantPayloads can be drained to zero by the erasure/segment loop above (e.g. all
++    // members flagged for erasure). Calling queryActivityRelations with an empty array would
++    // produce invalid SQL: `timestamp in ()` and a bare `()` group.
++    if (relevantPayloads.length === 0) {
++      return resultMap
++    }
++
+     const orConditions = relevantPayloads.map((r) => {
+       return {
+         and: [

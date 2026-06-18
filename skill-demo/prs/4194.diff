@@ -1,0 +1,27 @@
+diff --git a/services/apps/packages_worker/src/enricher/fetchActivitySnapshot.ts b/services/apps/packages_worker/src/enricher/fetchActivitySnapshot.ts
+index 7de9ba9982..5bc1da88a9 100644
+--- a/services/apps/packages_worker/src/enricher/fetchActivitySnapshot.ts
++++ b/services/apps/packages_worker/src/enricher/fetchActivitySnapshot.ts
+@@ -46,7 +46,7 @@ async function graphqlRequest<T>(
+   const resetSec = parseInt(response.headers.get('x-ratelimit-reset') ?? '0', 10)
+   const resetMs = resetSec ? resetSec * 1000 + 5_000 : Date.now() + 65_000
+ 
+-  if (response.status === 401) throw new FetchError('AUTH', '401 Unauthorized')
++  if (response.status === 401) throw new FetchError('TRANSIENT', '401 Unauthorized')
+   if (response.status === 403) {
+     const body = await response.text()
+     if (body.toLowerCase().includes('rate limit'))
+diff --git a/services/apps/packages_worker/src/enricher/fetchLightRepo.ts b/services/apps/packages_worker/src/enricher/fetchLightRepo.ts
+index 5c5aba0f0c..db6698cbf5 100644
+--- a/services/apps/packages_worker/src/enricher/fetchLightRepo.ts
++++ b/services/apps/packages_worker/src/enricher/fetchLightRepo.ts
+@@ -146,7 +146,8 @@ export async function fetchLightRepo(
+   const resetSec = parseInt(response.headers.get('x-ratelimit-reset') ?? '0', 10)
+   const resetMs = resetSec ? resetSec * 1000 + 5_000 : Date.now() + 65_000
+ 
+-  if (response.status === 401) throw new FetchError('AUTH', `401 Unauthorized for ${url}`)
++  // 401 is requester/platform-side (bad token, GitHub auth incident) — never a repo signal
++  if (response.status === 401) throw new FetchError('TRANSIENT', `401 Unauthorized for ${url}`)
+ 
+   if (response.status === 403) {
+     const body = await response.text()

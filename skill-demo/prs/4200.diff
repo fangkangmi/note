@@ -1,0 +1,51 @@
+diff --git a/services/apps/members_enrichment_worker/src/activities/member.ts b/services/apps/members_enrichment_worker/src/activities/member.ts
+index 5c77c55c51..f34855c343 100644
+--- a/services/apps/members_enrichment_worker/src/activities/member.ts
++++ b/services/apps/members_enrichment_worker/src/activities/member.ts
+@@ -112,11 +112,7 @@ export async function mergeMembers(
+   const memberService = new CommonMemberService(qx, svc.temporal, svc.log)
+ 
+   try {
+-    await memberService.merge(primaryMemberId, secondaryMemberId, {
+-      currentUser: {
+-        id: process.env['CROWD_LF_AGENT_USER_ID'],
+-      },
+-    })
++    await memberService.merge(primaryMemberId, secondaryMemberId)
+   } catch (error) {
+     svc.log.error({ err: error }, 'Failed to merge members')
+     throw error
+diff --git a/services/apps/merge_suggestions_worker/src/activities/common.ts b/services/apps/merge_suggestions_worker/src/activities/common.ts
+index 510a34c8e5..7ca822f9f9 100644
+--- a/services/apps/merge_suggestions_worker/src/activities/common.ts
++++ b/services/apps/merge_suggestions_worker/src/activities/common.ts
+@@ -108,11 +108,7 @@ export async function mergeMembers(
+   const memberService = new CommonMemberService(qx, svc.temporal, svc.log)
+ 
+   try {
+-    await memberService.merge(primaryMemberId, secondaryMemberId, {
+-      currentUser: {
+-        id: process.env['CROWD_LF_AGENT_USER_ID'],
+-      },
+-    })
++    await memberService.merge(primaryMemberId, secondaryMemberId)
+   } catch (error) {
+     svc.log.error({ err: error }, 'Failed to merge members')
+     throw error
+diff --git a/services/apps/script_executor_worker/src/activities/common.ts b/services/apps/script_executor_worker/src/activities/common.ts
+index fd9b7574eb..6e8b463267 100644
+--- a/services/apps/script_executor_worker/src/activities/common.ts
++++ b/services/apps/script_executor_worker/src/activities/common.ts
+@@ -20,11 +20,7 @@ export async function mergeMembers(
+   const memberService = new CommonMemberService(qx, svc.temporal, svc.log)
+ 
+   try {
+-    await memberService.merge(primaryMemberId, secondaryMemberId, {
+-      currentUser: {
+-        id: process.env['CROWD_LF_AGENT_USER_ID'],
+-      },
+-    })
++    await memberService.merge(primaryMemberId, secondaryMemberId)
+   } catch (error) {
+     svc.log.error({ err: error }, 'Failed to merge members')
+     throw error

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Facilitator Run-Sheet — LBG Agent Skills Workshop</title>
+<style>
+  :root{ --g:#00865A; --d:#00382a; --ink:#1d2926; --soft:#f4f8f6; --line:#d7e0db; --muted:#5d6f68; }
+  *{ box-sizing:border-box; }
+  body{ font-family:'Segoe UI',system-ui,sans-serif; color:var(--ink); margin:0; padding:14px 18px; font-size:11px; line-height:1.3; }
+  h1{ font-size:17px; color:var(--d); margin:0 0 1px; }
+  .sub{ color:var(--muted); font-size:10.5px; margin:0 0 8px; }
+  h2{ font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--g); margin:8px 0 3px; border-bottom:2px solid var(--g); padding-bottom:1px; }
+  table{ border-collapse:collapse; width:100%; }
+  th,td{ border:1px solid var(--line); padding:3px 6px; vertical-align:top; text-align:left; }
+  thead th{ background:var(--d); color:#fff; font-size:10px; }
+  .clk{ width:48px; font-weight:700; color:var(--g); white-space:nowrap; }
+  .seg{ width:150px; font-weight:700; }
+  .seg small{ display:block; color:var(--muted); font-weight:400; }
+  tr:nth-child(even) td{ background:var(--soft); }
+  .star{ color:var(--g); }
+  .cols{ display:flex; gap:14px; }
+  .col{ flex:1; }
+  ul{ margin:2px 0 6px; padding-left:16px; } li{ margin:1px 0; }
+  .box{ background:var(--soft); border:1px solid var(--line); border-left:3px solid var(--g); padding:5px 8px; margin-top:4px; border-radius:3px; }
+  b.k{ color:var(--d); }
+  @media print{ body{ padding:8px 10px; font-size:10px; } @page{ margin:10mm; } }
+</style></head>
+<body>
+
+<h1>Facilitator Run-Sheet — Agent Skills for Code Review</h1>
+<p class="sub">LBG · 90 minutes · 20–25 people · hybrid (demo + hands-on) · goal: build buy-in</p>
+
+<div class="cols">
+  <div class="col">
+    <h2>Pre-flight (before the room fills)</h2>
+    <ul>
+      <li>☐ <b class="k">Dry-run done:</b> real PR through both paths — confirmed no-skill <u>misses</u> the APIE violation</li>
+      <li>☐ Links live: PR · APIE doc · capture sheet · sandbox PR</li>
+      <li>☐ Cached recordings of both AI runs (fallback)</li>
+      <li>☐ <b class="k">@lbg-reviewer</b> ready to comment on a real PR</li>
+      <li>☐ Chart numbers + <code>[brackets]</code> filled in deck</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h2>If something breaks</h2>
+    <ul>
+      <li><b class="k">Live AI run fails →</b> play the cached recording, keep talking.</li>
+      <li><b class="k">No clause id prints →</b> narrate the clause from the standard (it's model-dependent).</li>
+      <li><b class="k">Humans found a lot →</b> lean on consistency/auditability, not just the gap.</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Run of show</h2>
+<table>
+<thead><tr><th class="clk">Clock</th><th class="seg">Segment</th><th>Do / Say / Click</th></tr></thead>
+<tbody>
+<tr><td class="clk">00:00</td><td class="seg">Open<small>5 min</small></td>
+  <td>Title slide. <b class="k">Say:</b> “How long does a proper APIE review take you?” (take 2–3). Then hands: “Who catches <i>every</i> violation, every time?” — few hands = the hook. Show agenda.</td></tr>
+<tr><td class="clk">05:00</td><td class="seg">You review it first<small>12 min</small></td>
+  <td>Hand out the 3 links. <b class="k">Start the 10-min timer.</b> Walk the room — note who opens the standard vs reviews from memory. No AI.</td></tr>
+<tr><td class="clk">17:00</td><td class="seg">Debrief<small>6 min</small></td>
+  <td>Collect: avg time · % who found the headline violation · most-missed. <b class="k">Edit the chart Data → set “Found by humans”.</b> Land: “the gap is the point.”</td></tr>
+<tr><td class="clk">23:00</td><td class="seg">AI — without skill<small>10 min</small></td>
+  <td><b class="k">Bet first:</b> hands up — will it catch the violation? Then run live (or recording). It comments on style/naming, no clause, misses the org rule. Land: “<b class="k">AI alone doesn’t know your standard.</b>”</td></tr>
+<tr><td class="clk">33:00</td><td class="seg"><span class="star">★</span> AI — with skill<small>15 min</small></td>
+  <td>Run live. <b class="k">Slow down. Point at the clause citation.</b> Re-ask the bet. Then: scorecard → big number (“~10 min → ~10 sec”) → <b class="k">Two lenses (pass@k):</b> “skill adds APIE depth but narrows the model’s view — that’s why we run <i>both</i>; both outputs are valuable.” → Why it matters: auditability first.</td></tr>
+<tr><td class="clk">48:00</td><td class="seg">Your turn — hands-on<small>20 min</small></td>
+  <td>Groups of 4–5 on the sandbox PR. Trigger the review with the skill; watch it cite APIE; <b class="k">try to fool it.</b> Facilitators roam. Collect “nailed it / missed it” notes (feeds the skill + the rollout pitch).</td></tr>
+<tr><td class="clk">68:00</td><td class="seg">Where this goes<small>15 min</small></td>
+  <td><b class="k">LIVE demo @lbg-reviewer</b> — comment it on a real PR, let it post the APIE review inline (8 min). Be honest it’s a PoC. Then discussion (7 min): advisory vs block-merge? · who signs off for audit? · keeping the skill in sync as the standard evolves? · which repos/standards next? <b class="k">Assign an owner to each.</b></td></tr>
+<tr><td class="clk">83:00</td><td class="seg">Wrap &amp; close<small>7 min</small></td>
+  <td>This week: run it on your next OpenAPI PR; send what it missed/over-flagged. Name the owner collating feedback for the rollout. Thanks + Q&amp;A.</td></tr>
+</tbody>
+</table>
+
+<div class="box">
+<b class="k">Fill before printing:</b> [date] · [facilitator] · [PR link] · [APIE doc link] · [capture link] · [sandbox PR link] · [feedback owner] &nbsp;|&nbsp;
+<b class="k">Chart:</b> violations present = __, found by humans = __ (live), found by skill = __.
+</div>
+
+</body></html>

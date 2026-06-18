@@ -1,0 +1,513 @@
+diff --git a/backend/src/api/public/openapi.yaml b/backend/src/api/public/openapi.yaml
+index de5adf011a..0a3089ca9a 100644
+--- a/backend/src/api/public/openapi.yaml
++++ b/backend/src/api/public/openapi.yaml
+@@ -46,15 +46,86 @@ paths:
+   # ──────────────────────────────────────────────
+   # Members
+   # ──────────────────────────────────────────────
++  /members:
++    post:
++      operationId: createMember
++      summary: Create a member profile
++      description: >
++        Create a new member profile in CDP with one or more identities.
++      tags:
++        - Members
++      security:
++        - OAuth2Bearer:
++            - write:members
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              type: object
++              required:
++                - displayName
++                - identities
++              properties:
++                displayName:
++                  type: string
++                  minLength: 1
++                  description: Display name for the member profile.
++                identities:
++                  type: array
++                  minItems: 1
++                  description: Initial identities for the member.
++                  items:
++                    $ref: '#/components/schemas/MemberIdentityInput'
++            example:
++              displayName: Jane Doe
++              identities:
++                - value: abc123
++                  platform: lfid
++                  type: username
++                  source: lfxOne
++                  verified: true
++                  verifiedBy: jane@lfx.dev
++      responses:
++        '201':
++          description: Member created successfully.
++          content:
++            application/json:
++              schema:
++                type: object
++                required:
++                  - memberId
++                properties:
++                  memberId:
++                    type: string
++                    format: uuid
++              example:
++                memberId: 550e8400-e29b-41d4-a716-446655440000
++        '400':
++          $ref: '#/components/responses/BadRequest'
++        '401':
++          $ref: '#/components/responses/Unauthorized'
++        '403':
++          $ref: '#/components/responses/Forbidden'
++        '409':
++          description: Identity already exists on another member.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/HttpError'
++              example:
++                error:
++                  code: CONFLICT
++                  message: Identity already exists on another member
++
+   /members/resolve:
+     post:
+       operationId: resolveMember
+       summary: Resolve a CDP member profile
+       description: >
+-        Resolve a `memberId` from one or more identities. LFX One should always
+-        call this first to obtain the CDP member ID before using other endpoints.
+-        Returns 404 if no matching profile exists, or 409 if the provided
+-        identities belong to different profiles.
++        Resolve memberId from identities. LFX One should always make a first
++        request to this API to retrieve the corresponding memberId from CDP.
++        If a member is found, use it. If not, create a member.
+       tags:
+         - Members
+       security:
+@@ -107,7 +178,7 @@ paths:
+         '403':
+           $ref: '#/components/responses/Forbidden'
+         '404':
+-          description: No matching member profile found.
++          description: Profile not found.
+           content:
+             application/json:
+               schema:
+@@ -117,7 +188,7 @@ paths:
+                   code: NOT_FOUND
+                   message: Member not found
+         '409':
+-          description: The provided identities belong to different member profiles.
++          description: Multiple member profiles matched.
+           content:
+             application/json:
+               schema:
+@@ -125,7 +196,7 @@ paths:
+               example:
+                 error:
+                   code: CONFLICT
+-                  message: Conflicting identities
++                  message: Multiple member profiles matched
+ 
+   # ──────────────────────────────────────────────
+   # Member Identities
+@@ -236,7 +307,7 @@ paths:
+         '404':
+           $ref: '#/components/responses/MemberNotFound'
+         '409':
+-          description: Identity already exists on this member or is verified on another.
++          description: Identity already exists on another member.
+           content:
+             application/json:
+               schema:
+@@ -244,7 +315,7 @@ paths:
+               example:
+                 error:
+                   code: CONFLICT
+-                  message: Identity already exists on this member
++                  message: Identity already exists on another member
+ 
+   /members/{memberId}/identities/{identityId}:
+     patch:
+@@ -320,7 +391,7 @@ paths:
+               schema:
+                 $ref: '#/components/schemas/HttpError'
+         '409':
+-          description: Identity is already verified on another member.
++          description: Identity already exists on another member.
+           content:
+             application/json:
+               schema:
+@@ -328,7 +399,7 @@ paths:
+               example:
+                 error:
+                   code: CONFLICT
+-                  message: Identity already verified on another member
++                  message: Identity already exists on another member
+ 
+   # ──────────────────────────────────────────────
+   # Maintainer Roles
+@@ -972,6 +1043,7 @@ components:
+           tokenUrl: https://linuxfoundation.auth0.com/oauth/token
+           scopes:
+             read:members: Read member profiles
++            write:members: Create member profiles
+             read:member-identities: Read member identities
+             write:member-identities: Create and verify member identities
+             read:maintainer-roles: Read maintainer roles
+@@ -1008,6 +1080,40 @@ components:
+         format: uuid
+ 
+   schemas:
++    MemberIdentityInput:
++      type: object
++      required:
++        - value
++        - platform
++        - type
++        - source
++        - verified
++      properties:
++        value:
++          type: string
++          minLength: 1
++          description: Identity value (e.g. username, email address).
++        platform:
++          type: string
++          minLength: 1
++          description: Platform name (e.g. github, lfid).
++        type:
++          type: string
++          enum:
++            - username
++            - email
++          description: Identity type.
++        source:
++          type: string
++          minLength: 1
++          description: Source system that created this identity.
++        verified:
++          type: boolean
++          description: Whether the identity is verified.
++        verifiedBy:
++          type: string
++          description: Required when `verified` is true. Identifier of who verified.
++
+     MemberIdentity:
+       type: object
+       required:
+diff --git a/backend/src/api/public/v1/members/createMember.ts b/backend/src/api/public/v1/members/createMember.ts
+new file mode 100644
+index 0000000000..075be732ee
+--- /dev/null
++++ b/backend/src/api/public/v1/members/createMember.ts
+@@ -0,0 +1,92 @@
++import type { Request, Response } from 'express'
++import { z } from 'zod'
++
++import { captureApiChange, memberCreateAction, memberEditIdentitiesAction } from '@crowd/audit-logs'
++import { getProperDisplayName } from '@crowd/common'
++import {
++  insertManyMemberIdentities,
++  createMember as insertMember,
++  optionsQx,
++} from '@crowd/data-access-layer'
++import { MemberIdentityType } from '@crowd/types'
++
++import { created } from '@/utils/api'
++import { rethrowDbConflict } from '@/utils/err'
++import { validateOrThrow } from '@/utils/validation'
++
++const bodySchema = z.object({
++  displayName: z.string().trim().min(1),
++  identities: z
++    .array(
++      z
++        .object({
++          value: z.string().min(1),
++          platform: z.string().min(1),
++          type: z.enum(MemberIdentityType),
++          source: z.string().min(1),
++          verified: z.boolean(),
++          verifiedBy: z.string().optional(),
++        })
++        .refine((data) => !data.verified || data.verifiedBy, {
++          message: 'verifiedBy is required when verified is true',
++          path: ['verifiedBy'],
++        }),
++    )
++    .min(1),
++})
++
++export async function createMember(req: Request, res: Response): Promise<void> {
++  const { displayName, identities } = validateOrThrow(bodySchema, req.body)
++  const qx = optionsQx(req)
++
++  const normalizedDisplayName = getProperDisplayName(displayName)
++
++  const { dbMember, dbIdentities } = await qx.tx(async (tx) => {
++    try {
++      const dbMember = await insertMember(tx, {
++        displayName: normalizedDisplayName,
++        joinedAt: new Date().toISOString(),
++        attributes: {},
++        reach: {},
++        // OpenSearch sync only keeps members that either have activities or have manuallyCreated set.
++        manuallyCreated: true,
++      })
++
++      const dbIdentities = await insertManyMemberIdentities(
++        tx,
++        identities.map((identity) => ({
++          ...identity,
++          memberId: dbMember.id,
++          value: identity.value.trim().toLowerCase(),
++        })),
++        true,
++        true,
++      )
++
++      return { dbMember, dbIdentities }
++    } catch (error) {
++      return rethrowDbConflict(error)
++    }
++  })
++
++  await captureApiChange(
++    req,
++    memberCreateAction(dbMember.id, async (captureNewState) => {
++      captureNewState({
++        memberId: dbMember.id,
++        displayName: dbMember.displayName,
++        manuallyCreated: true,
++      })
++    }),
++  )
++
++  await captureApiChange(
++    req,
++    memberEditIdentitiesAction(dbMember.id, async (captureOldState, captureNewState) => {
++      captureOldState({})
++      captureNewState(dbIdentities)
++    }),
++  )
++
++  created(res, { memberId: dbMember.id })
++}
+diff --git a/backend/src/api/public/v1/members/identities/createMemberIdentity.ts b/backend/src/api/public/v1/members/identities/createMemberIdentity.ts
+index b509cf195b..5d20ee7398 100644
+--- a/backend/src/api/public/v1/members/identities/createMemberIdentity.ts
++++ b/backend/src/api/public/v1/members/identities/createMemberIdentity.ts
+@@ -2,7 +2,7 @@ import type { Request, Response } from 'express'
+ import { z } from 'zod'
+ 
+ import { captureApiChange, memberEditIdentitiesAction } from '@crowd/audit-logs'
+-import { ConflictError, NotFoundError } from '@crowd/common'
++import { NotFoundError } from '@crowd/common'
+ import {
+   MemberField,
+   findMemberById,
+@@ -15,6 +15,7 @@ import {
+ import { IMemberIdentity, MemberIdentityType } from '@crowd/types'
+ 
+ import { created, ok } from '@/utils/api'
++import { rethrowDbConflict } from '@/utils/err'
+ import { validateOrThrow } from '@/utils/validation'
+ 
+ const paramsSchema = z.object({
+@@ -35,25 +36,6 @@ const bodySchema = z
+     path: ['verifiedBy'],
+   })
+ 
+-type DbConstraintError = Error & {
+-  constraint?: string
+-  original?: { constraint?: string }
+-  parent?: { constraint?: string }
+-}
+-
+-function throwIdentityConflict(
+-  error: DbConstraintError,
+-  data: { platform: string; value: string; type: MemberIdentityType },
+-): never {
+-  const constraint = error.constraint ?? error.original?.constraint ?? error.parent?.constraint
+-
+-  if (constraint === 'uix_memberIdentities_platform_value_type_verified') {
+-    throw new ConflictError('Identity already verified on another member', data)
+-  }
+-
+-  throw error
+-}
+-
+ export async function createMemberIdentity(req: Request, res: Response): Promise<void> {
+   const { memberId } = validateOrThrow(paramsSchema, req.params)
+   const data = validateOrThrow(bodySchema, req.body)
+@@ -67,7 +49,6 @@ export async function createMemberIdentity(req: Request, res: Response): Promise
+   // The data-sink writes identity values as trimmed lowercase, so normalize here
+   // to keep idempotency checks reliable against existing rows.
+   const normalizedValue = data.value.trim().toLowerCase()
+-  const conflictContext = { platform: data.platform, value: normalizedValue, type: data.type }
+ 
+   let result!: IMemberIdentity
+   let alreadyExisted = false
+@@ -121,7 +102,8 @@ export async function createMemberIdentity(req: Request, res: Response): Promise
+             }
+           }
+         } catch (error) {
+-          throwIdentityConflict(error as DbConstraintError, conflictContext)
++          const ctx = { platform: data.platform, value: normalizedValue, type: data.type }
++          rethrowDbConflict(error, ctx)
+         }
+ 
+         await touchMemberUpdatedAt(tx, memberId)
+diff --git a/backend/src/api/public/v1/members/identities/verifyMemberIdentity.ts b/backend/src/api/public/v1/members/identities/verifyMemberIdentity.ts
+index b02aa86372..a7f940b7c6 100644
+--- a/backend/src/api/public/v1/members/identities/verifyMemberIdentity.ts
++++ b/backend/src/api/public/v1/members/identities/verifyMemberIdentity.ts
+@@ -6,7 +6,7 @@ import {
+   memberUnmergeAction,
+   memberVerifyIdentityAction,
+ } from '@crowd/audit-logs'
+-import { ConflictError, InternalError, NotFoundError } from '@crowd/common'
++import { InternalError, NotFoundError } from '@crowd/common'
+ import {
+   invalidateMemberQueryCache,
+   prepareMemberUnmerge,
+@@ -31,6 +31,7 @@ import {
+ } from '@crowd/types'
+ 
+ import { noContent, ok } from '@/utils/api'
++import { rethrowDbConflict } from '@/utils/err'
+ import { validateOrThrow } from '@/utils/validation'
+ 
+ const paramsSchema = z.object({
+@@ -92,15 +93,9 @@ export async function verifyMemberIdentity(req: Request, res: Response): Promise
+             verifiedBy,
+           })
+         } catch (error) {
+-          const constraint =
+-            error.constraint ?? error.original?.constraint ?? error.parent?.constraint
+-
+-          if (verified && constraint === 'uix_memberIdentities_platform_value_type_verified') {
+-            throw new ConflictError('Identity already verified on another member', {
+-              platform: identity.platform,
+-              value: identity.value,
+-              type: identity.type,
+-            })
++          if (verified) {
++            const ctx = { platform: identity.platform, value: identity.value, type: identity.type }
++            rethrowDbConflict(error, ctx)
+           }
+ 
+           throw error
+diff --git a/backend/src/api/public/v1/members/index.ts b/backend/src/api/public/v1/members/index.ts
+index 70f9ca289a..12eab8e837 100644
+--- a/backend/src/api/public/v1/members/index.ts
++++ b/backend/src/api/public/v1/members/index.ts
+@@ -4,6 +4,7 @@ import { requireScopes } from '@/api/public/middlewares/requireScopes'
+ import { safeWrap } from '@/middlewares/errorMiddleware'
+ import { SCOPES } from '@/security/scopes'
+ 
++import { createMember } from './createMember'
+ import { createMemberIdentity } from './identities/createMemberIdentity'
+ import { getMemberIdentities } from './identities/getMemberIdentities'
+ import { verifyMemberIdentity } from './identities/verifyMemberIdentity'
+@@ -20,6 +21,8 @@ import { verifyMemberWorkExperience } from './work-experiences/verifyMemberWorkE
+ export function membersRouter(): Router {
+   const router = Router()
+ 
++  router.post('/', requireScopes([SCOPES.WRITE_MEMBERS]), safeWrap(createMember))
++
+   router.post('/resolve', requireScopes([SCOPES.READ_MEMBERS]), safeWrap(resolveMemberByIdentities))
+ 
+   router.get(
+diff --git a/backend/src/api/public/v1/members/resolveMember.ts b/backend/src/api/public/v1/members/resolveMember.ts
+index 8e0ec42a75..0d9f654f4e 100644
+--- a/backend/src/api/public/v1/members/resolveMember.ts
++++ b/backend/src/api/public/v1/members/resolveMember.ts
+@@ -37,7 +37,7 @@ export async function resolveMemberByIdentities(req: Request, res: Response): Pr
+   if (memberIds.length === 0) {
+     throw new NotFoundError('Member not found')
+   } else if (memberIds.length > 1) {
+-    throw new ConflictError('Conflicting identities', { memberIds })
++    throw new ConflictError('Multiple member profiles matched', { memberIds })
+   }
+ 
+   const memberId = memberIds[0]
+diff --git a/backend/src/security/scopes.ts b/backend/src/security/scopes.ts
+index c60542d2ee..8ab8148556 100644
+--- a/backend/src/security/scopes.ts
++++ b/backend/src/security/scopes.ts
+@@ -1,5 +1,6 @@
+ export const SCOPES = {
+   READ_MEMBERS: 'read:members',
++  WRITE_MEMBERS: 'write:members',
+   READ_ORGANIZATIONS: 'read:organizations',
+   WRITE_ORGANIZATIONS: 'write:organizations',
+   READ_MEMBER_IDENTITIES: 'read:member-identities',
+diff --git a/backend/src/utils/err.ts b/backend/src/utils/err.ts
+new file mode 100644
+index 0000000000..4b0cdd1039
+--- /dev/null
++++ b/backend/src/utils/err.ts
+@@ -0,0 +1,18 @@
++import { ConflictError, getDbConstraint } from '@crowd/common'
++
++type ConflictFactory = (context?: Record<string, unknown>) => Error
++
++const DB_CONFLICT_MAP: Record<string, ConflictFactory> = {
++  uix_memberIdentities_platform_value_type_verified: (context) =>
++    new ConflictError('Identity already exists on another member', context),
++}
++
++export function rethrowDbConflict(error: unknown, context?: Record<string, unknown>): never {
++  const factory = DB_CONFLICT_MAP[getDbConstraint(error) ?? '']
++
++  if (factory) {
++    throw factory(context)
++  }
++
++  throw error
++}
+diff --git a/services/libs/common/src/errors/db.ts b/services/libs/common/src/errors/db.ts
+new file mode 100644
+index 0000000000..0d813b5763
+--- /dev/null
++++ b/services/libs/common/src/errors/db.ts
+@@ -0,0 +1,15 @@
++type ConstraintCarrier = {
++  constraint?: string
++  original?: { constraint?: string }
++  parent?: { constraint?: string }
++}
++
++/** Reads a Postgres constraint name from a pg or Sequelize-wrapped error. */
++export function getDbConstraint(error: unknown): string | undefined {
++  if (!error || typeof error !== 'object') {
++    return undefined
++  }
++
++  const err = error as ConstraintCarrier
++  return err.constraint ?? err.original?.constraint ?? err.parent?.constraint
++}
+diff --git a/services/libs/common/src/index.ts b/services/libs/common/src/index.ts
+index 8744f03b07..078bbaadfb 100644
+--- a/services/libs/common/src/index.ts
++++ b/services/libs/common/src/index.ts
+@@ -19,6 +19,8 @@ import {
+   UnauthorizedError,
+ } from './errors/http'
+ 
++export { getDbConstraint } from './errors/db'
++
+ export * from './env'
+ export * from './timing'
+ export * from './utils'

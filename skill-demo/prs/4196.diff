@@ -1,0 +1,734 @@
+diff --git a/.claude/skills/packages-worker-add-entrypoint/SKILL.md b/.claude/skills/packages-worker-add-entrypoint/SKILL.md
+index a7ce04b297..a6f1466c62 100644
+--- a/.claude/skills/packages-worker-add-entrypoint/SKILL.md
++++ b/.claude/skills/packages-worker-add-entrypoint/SKILL.md
+@@ -19,7 +19,6 @@ each worker in its own `src/{worker}/` directory with its own entry point.
+ services/apps/packages_worker/
+   src/
+     bin/
+-      packages-worker.ts        ← parent stub
+       github-repos-enricher.ts  ← existing worker
+       <name>.ts                 ← entry point you will create
+     github/                     ← existing worker logic
+diff --git a/backend/src/osspckgs/migrations/V1781074345__add-scorecard-job-kinds.sql b/backend/src/osspckgs/migrations/V1781074345__add-scorecard-job-kinds.sql
+new file mode 100644
+index 0000000000..d77a13722b
+--- /dev/null
++++ b/backend/src/osspckgs/migrations/V1781074345__add-scorecard-job-kinds.sql
+@@ -0,0 +1,11 @@
++-- Extend osspckgs_ingest_jobs.job_kind CHECK constraint to include scorecard kinds.
++-- Required for ingestScorecard workflow (CM-1227).
++ALTER TABLE osspckgs_ingest_jobs
++  DROP CONSTRAINT osspckgs_ingest_jobs_job_kind_check,
++  ADD CONSTRAINT osspckgs_ingest_jobs_job_kind_check CHECK (job_kind IN (
++    'packages', 'versions', 'package_dependencies',
++    'repos', 'package_repos',
++    'advisories', 'advisory_packages',
++    'dependent_counts',
++    'scorecard_repos', 'scorecard_checks'
++  ));
+diff --git a/docs/adr/0001-oss-packages-design-decisions.md b/docs/adr/0001-oss-packages-design-decisions.md
+index d5dd3e348e..f44602d32d 100644
+--- a/docs/adr/0001-oss-packages-design-decisions.md
++++ b/docs/adr/0001-oss-packages-design-decisions.md
+@@ -59,7 +59,6 @@ All packages_worker sub-workers live in a single npm package (`services/apps/pac
+ services/apps/packages_worker/
+   src/
+     bin/
+-      packages-worker.ts      ← parent / health-check stub
+       github-repos-enricher.ts
+     enricher/                 ← github-repos-enricher logic
+     npm/                      ← npm worker (future)
+diff --git a/scripts/builders/packages.env b/scripts/builders/packages.env
+index e208caaf95..78bfffcba6 100644
+--- a/scripts/builders/packages.env
++++ b/scripts/builders/packages.env
+@@ -1,4 +1,4 @@
+ DOCKERFILE="./services/docker/Dockerfile.packages"
+ CONTEXT="../"
+ REPO="sjc.ocir.io/axbydjxa5zuh/packages"
+-SERVICES="packages github-repos-enricher deps-dev-ingest npm-worker maven-worker osv-worker"
++SERVICES="github-repos-enricher bq-dataset-ingest npm-worker maven-worker osv-worker"
+diff --git a/scripts/services/deps-dev-ingest.yaml b/scripts/services/bq-dataset-ingest.yaml
+similarity index 91%
+rename from scripts/services/deps-dev-ingest.yaml
+rename to scripts/services/bq-dataset-ingest.yaml
+index a09e77dfdf..404b019658 100644
+--- a/scripts/services/deps-dev-ingest.yaml
++++ b/scripts/services/bq-dataset-ingest.yaml
+@@ -3,18 +3,18 @@ version: '3.1'
+ x-env-args: &env-args
+   DOCKER_BUILDKIT: 1
+   NODE_ENV: docker
+-  SERVICE: deps-dev-ingest
+-  CROWD_TEMPORAL_TASKQUEUE: deps-dev-ingest
++  SERVICE: bq-dataset-ingest
++  CROWD_TEMPORAL_TASKQUEUE: bq-dataset-ingest
+   CROWD_TEMPORAL_NAMESPACE: ${CROWD_PACKAGES_TEMPORAL_NAMESPACE}
+   SHELL: /bin/sh
+   SUPPRESS_NO_CONFIG_WARNING: 'true'
+ 
+ services:
+-  deps-dev-ingest:
++  bq-dataset-ingest:
+     build:
+       context: ../../
+       dockerfile: ./scripts/services/docker/Dockerfile.packages
+-    command: 'pnpm run start:deps-dev-ingest'
++    command: 'pnpm run start:bq-dataset-ingest'
+     working_dir: /usr/crowd/app/services/apps/packages_worker
+     env_file:
+       - ../../backend/.env.dist.local
+@@ -27,11 +27,11 @@ services:
+     networks:
+       - crowd-bridge
+ 
+-  deps-dev-ingest-dev:
++  bq-dataset-ingest-dev:
+     build:
+       context: ../../
+       dockerfile: ./scripts/services/docker/Dockerfile.packages
+-    command: 'pnpm run dev:deps-dev-ingest'
++    command: 'pnpm run dev:bq-dataset-ingest'
+     working_dir: /usr/crowd/app/services/apps/packages_worker
+     # user: '${USER_ID}:${GROUP_ID}'
+     env_file:
+@@ -41,7 +41,7 @@ services:
+       - ../../backend/.env.override.composed
+     environment:
+       <<: *env-args
+-    hostname: deps-dev-ingest
++    hostname: bq-dataset-ingest
+     networks:
+       - crowd-bridge
+     volumes:
+diff --git a/scripts/services/packages.yaml b/scripts/services/packages.yaml
+deleted file mode 100644
+index 459f780ebd..0000000000
+--- a/scripts/services/packages.yaml
++++ /dev/null
+@@ -1,67 +0,0 @@
+-version: '3.1'
+-
+-x-env-args: &env-args
+-  DOCKER_BUILDKIT: 1
+-  NODE_ENV: docker
+-  SERVICE: packages-worker
+-  CROWD_TEMPORAL_TASKQUEUE: packages-worker
+-  CROWD_TEMPORAL_NAMESPACE: ${CROWD_PACKAGES_TEMPORAL_NAMESPACE}
+-  SHELL: /bin/sh
+-  SUPPRESS_NO_CONFIG_WARNING: 'true'
+-
+-services:
+-  packages:
+-    build:
+-      context: ../../
+-      dockerfile: ./scripts/services/docker/Dockerfile.packages
+-    command: 'pnpm run start:packages-worker'
+-    working_dir: /usr/crowd/app/services/apps/packages_worker
+-    env_file:
+-      - ../../backend/.env.dist.local
+-      - ../../backend/.env.dist.composed
+-      - ../../backend/.env.override.local
+-      - ../../backend/.env.override.composed
+-    environment:
+-      <<: *env-args
+-    restart: always
+-    networks:
+-      - crowd-bridge
+-
+-  packages-dev:
+-    build:
+-      context: ../../
+-      dockerfile: ./scripts/services/docker/Dockerfile.packages
+-    command: 'pnpm run dev:packages-worker'
+-    working_dir: /usr/crowd/app/services/apps/packages_worker
+-    # user: '${USER_ID}:${GROUP_ID}'
+-    env_file:
+-      - ../../backend/.env.dist.local
+-      - ../../backend/.env.dist.composed
+-      - ../../backend/.env.override.local
+-      - ../../backend/.env.override.composed
+-    environment:
+-      <<: *env-args
+-    hostname: packages
+-    networks:
+-      - crowd-bridge
+-    volumes:
+-      - ../../services/libs/audit-logs/src:/usr/crowd/app/services/libs/audit-logs/src
+-      - ../../services/libs/common/src:/usr/crowd/app/services/libs/common/src
+-      - ../../services/libs/common_services/src:/usr/crowd/app/services/libs/common_services/src
+-      - ../../services/libs/data-access-layer/src:/usr/crowd/app/services/libs/data-access-layer/src
+-      - ../../services/libs/database/src:/usr/crowd/app/services/libs/database/src
+-      - ../../services/libs/integrations/src:/usr/crowd/app/services/libs/integrations/src
+-      - ../../services/libs/logging/src:/usr/crowd/app/services/libs/logging/src
+-      - ../../services/libs/nango/src:/usr/crowd/app/services/libs/nango/src
+-      - ../../services/libs/opensearch/src:/usr/crowd/app/services/libs/opensearch/src
+-      - ../../services/libs/queue/src:/usr/crowd/app/services/libs/queue/src
+-      - ../../services/libs/redis/src:/usr/crowd/app/services/libs/redis/src
+-      - ../../services/libs/snowflake/src:/usr/crowd/app/services/libs/snowflake/src
+-      - ../../services/libs/telemetry/src:/usr/crowd/app/services/libs/telemetry/src
+-      - ../../services/libs/temporal/src:/usr/crowd/app/services/libs/temporal/src
+-      - ../../services/libs/types/src:/usr/crowd/app/services/libs/types/src
+-      - ../../services/apps/packages_worker/src:/usr/crowd/app/services/apps/packages_worker/src
+-
+-networks:
+-  crowd-bridge:
+-    external: true
+diff --git a/services/apps/packages_worker/package.json b/services/apps/packages_worker/package.json
+index 3f5f9789b4..9e0f0ab2a1 100644
+--- a/services/apps/packages_worker/package.json
++++ b/services/apps/packages_worker/package.json
+@@ -2,39 +2,33 @@
+   "name": "@crowd/packages-worker",
+   "private": true,
+   "scripts": {
+-    "start:packages-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=packages-worker tsx src/bin/packages-worker.ts",
+     "start:criticality-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=criticality-worker tsx src/bin/criticality-worker.ts",
+-    "start:deps-dev-ingest": "CROWD_TEMPORAL_TASKQUEUE=deps-dev-ingest CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=deps-dev-ingest tsx src/bin/deps-dev-ingest.ts",
+-    "start:npm-worker": "CROWD_TEMPORAL_TASKQUEUE=npm-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=npm-worker tsx src/bin/npm-worker.ts",
+-    "start:osv-worker": "CROWD_TEMPORAL_TASKQUEUE=osv-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=osv-worker tsx src/bin/osv-worker.ts",
+-    "start:github-repos-enricher": "SERVICE=github-repos-enricher tsx src/bin/github-repos-enricher.ts",
++    "dev:criticality-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=criticality-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9237 src/bin/criticality-worker.ts",
++    "dev:criticality-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=criticality-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9237 src/bin/criticality-worker.ts",
+     "run:pagerank": "tsx src/criticality/run-pagerank.ts",
+     "run:impact": "tsx src/criticality/run-impact.ts",
+     "dev:pagerank": "tsx --expose-gc src/criticality/run-pagerank.ts",
+-    "start:pom-fetcher": "SERVICE=pom-fetcher tsx src/bin/pom-fetcher.ts",
+-    "backfill:maven": "SERVICE=maven tsx src/bin/maven-backfill.ts",
+-    "backfill:stewardship": "SERVICE=stewardship-backfill tsx src/bin/stewardship-backfill.ts",
+-    "backfill:stewardship:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=stewardship-backfill LOG_LEVEL=info tsx src/bin/stewardship-backfill.ts",
+-    "dev:packages-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=packages-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9233 src/bin/packages-worker.ts",
+-    "dev:criticality-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=criticality-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9237 src/bin/criticality-worker.ts",
+-    "start:maven-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=maven-worker tsx src/bin/maven-worker.ts",
+-    "backfill:maven:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=maven LOG_LEVEL=info tsx src/bin/maven-backfill.ts",
+-    "dev:maven-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=maven-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/maven-worker.ts",
+-    "dev:deps-dev-ingest": "CROWD_TEMPORAL_TASKQUEUE=deps-dev-ingest CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=deps-dev-ingest nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9235 src/bin/deps-dev-ingest.ts",
+-    "dev:npm-worker": "CROWD_TEMPORAL_TASKQUEUE=npm-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=npm-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/npm-worker.ts",
+-    "dev:osv-worker": "CROWD_TEMPORAL_TASKQUEUE=osv-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=osv-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9238 src/bin/osv-worker.ts",
++    "start:github-repos-enricher": "SERVICE=github-repos-enricher tsx src/bin/github-repos-enricher.ts",
+     "dev:github-repos-enricher": "SERVICE=github-repos-enricher LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9234 src/bin/github-repos-enricher.ts",
+-    "dev:packages-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=packages-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9233 src/bin/packages-worker.ts",
+-    "dev:criticality-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=criticality-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9237 src/bin/criticality-worker.ts",
+-    "dev:maven-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=maven-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/maven-worker.ts",
+-    "dev:deps-dev-ingest:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=deps-dev-ingest CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=deps-dev-ingest nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9235 src/bin/deps-dev-ingest.ts",
++    "dev:github-repos-enricher:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=github-repos-enricher LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9234 src/bin/github-repos-enricher.ts",
++    "start:bq-dataset-ingest": "CROWD_TEMPORAL_TASKQUEUE=bq-dataset-ingest CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=bq-dataset-ingest tsx src/bin/bq-dataset-ingest.ts",
++    "dev:bq-dataset-ingest": "CROWD_TEMPORAL_TASKQUEUE=bq-dataset-ingest CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=bq-dataset-ingest nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9235 src/bin/bq-dataset-ingest.ts",
++    "dev:bq-dataset-ingest:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=bq-dataset-ingest CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=bq-dataset-ingest nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9235 src/bin/bq-dataset-ingest.ts",
++    "export-to-bucket": "SERVICE=bq-dataset-ingest tsx src/scripts/exportToBucket.ts",
++    "export-to-bucket:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=bq-dataset-ingest tsx src/scripts/exportToBucket.ts",
++    "start:npm-worker": "CROWD_TEMPORAL_TASKQUEUE=npm-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=npm-worker tsx src/bin/npm-worker.ts",
++    "dev:npm-worker": "CROWD_TEMPORAL_TASKQUEUE=npm-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=npm-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/npm-worker.ts",
+     "dev:npm-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=npm-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=npm-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/npm-worker.ts",
++    "start:osv-worker": "CROWD_TEMPORAL_TASKQUEUE=osv-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=osv-worker tsx src/bin/osv-worker.ts",
++    "dev:osv-worker": "CROWD_TEMPORAL_TASKQUEUE=osv-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=osv-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9238 src/bin/osv-worker.ts",
+     "dev:osv-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=osv-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=osv-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9238 src/bin/osv-worker.ts",
+-    "start:maven": "SERVICE=maven tsx src/bin/maven.ts",
+-    "dev:maven": "SERVICE=maven LOG_LEVEL=info nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9235 src/bin/maven.ts",
+-    "dev:github-repos-enricher:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=github-repos-enricher LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9234 src/bin/github-repos-enricher.ts",
+-    "export-to-bucket": "SERVICE=deps-dev-ingest tsx src/scripts/exportToBucket.ts",
+-    "export-to-bucket:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=deps-dev-ingest tsx src/scripts/exportToBucket.ts",
++    "start:maven-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=maven-worker tsx src/bin/maven-worker.ts",
++    "dev:maven-worker": "CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=maven-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/maven-worker.ts",
++    "dev:maven-worker:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && CROWD_TEMPORAL_TASKQUEUE=packages-worker CROWD_TEMPORAL_NAMESPACE=$CROWD_PACKAGES_TEMPORAL_NAMESPACE SERVICE=maven-worker LOG_LEVEL=trace nodemon --watch src --watch ../../libs --ext ts --exec tsx --inspect=0.0.0.0:9236 src/bin/maven-worker.ts",
++    "backfill:maven": "SERVICE=maven tsx src/bin/maven-backfill.ts",
++    "backfill:maven:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=maven LOG_LEVEL=info tsx src/bin/maven-backfill.ts",
++    "backfill:stewardship": "SERVICE=stewardship-backfill tsx src/bin/stewardship-backfill.ts",
++    "backfill:stewardship:local": "set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && SERVICE=stewardship-backfill LOG_LEVEL=info tsx src/bin/stewardship-backfill.ts",
+     "monitor:osspckgs:local": "bash -c 'set -a && . ../../../backend/.env.dist.local && . ../../../backend/.env.override.local && set +a && node ../../../scripts/monitor-osspckgs.mjs'",
+     "lint": "npx eslint --ext .ts src --max-warnings=0",
+     "format": "npx prettier --write \"src/**/*.ts\"",
+diff --git a/services/apps/packages_worker/src/bin/deps-dev-ingest.ts b/services/apps/packages_worker/src/bin/bq-dataset-ingest.ts
+similarity index 100%
+rename from services/apps/packages_worker/src/bin/deps-dev-ingest.ts
+rename to services/apps/packages_worker/src/bin/bq-dataset-ingest.ts
+diff --git a/services/apps/packages_worker/src/bin/maven-worker.ts b/services/apps/packages_worker/src/bin/maven-worker.ts
+index 54a4e7c672..3cbfee3ff6 100644
+--- a/services/apps/packages_worker/src/bin/maven-worker.ts
++++ b/services/apps/packages_worker/src/bin/maven-worker.ts
+@@ -1,10 +1,6 @@
+ import { scheduleMavenCritical } from '../maven/schedule'
+ import { svc } from '../service'
+ 
+-// Maven-only worker: runs on the shared `packages-worker` taskqueue (so it picks up
+-// the same bundled workflows/activities) but registers ONLY the maven-critical
+-// schedule. Intended for local dev — lets you run Maven in isolation without also
+-// firing the npm/osv schedules that bin/packages-worker.ts registers.
+ setImmediate(async () => {
+   await svc.init()
+   await scheduleMavenCritical()
+diff --git a/services/apps/packages_worker/src/bin/packages-worker.ts b/services/apps/packages_worker/src/bin/packages-worker.ts
+deleted file mode 100644
+index 4be72f0c2f..0000000000
+--- a/services/apps/packages_worker/src/bin/packages-worker.ts
++++ /dev/null
+@@ -1,20 +0,0 @@
+-import { scheduleMavenCritical } from '../maven/schedule'
+-import {
+-  scheduleDailyDownloadsBackfill,
+-  scheduleLast30dHistoryBackfill,
+-  scheduleLatestLast30dRefresh,
+-  scheduleNpmIngest,
+-} from '../npm/schedule'
+-import { scheduleOsvSync } from '../osv/schedule'
+-import { svc } from '../service'
+-
+-setImmediate(async () => {
+-  await svc.init()
+-  await scheduleNpmIngest()
+-  await scheduleDailyDownloadsBackfill()
+-  await scheduleLatestLast30dRefresh()
+-  await scheduleLast30dHistoryBackfill()
+-  await scheduleOsvSync()
+-  await scheduleMavenCritical()
+-  await svc.start()
+-})
+diff --git a/services/apps/packages_worker/src/deps-dev/config.ts b/services/apps/packages_worker/src/deps-dev/config.ts
+index 6731080b93..c9565ebc94 100644
+--- a/services/apps/packages_worker/src/deps-dev/config.ts
++++ b/services/apps/packages_worker/src/deps-dev/config.ts
+@@ -10,6 +10,7 @@ function requireEnv(name: string): string {
+ export const GCP_PROJECT = requireEnv('OSSPCKGS_GCP_PROJECT')
+ export const GCS_BUCKET = requireEnv('OSSPCKGS_GCS_BUCKET')
+ export const DEPS_DEV_DATASET = 'bigquery-public-data.deps_dev_v1'
++export const SCORECARD_DATASET = 'openssf.scorecardcron'
+ 
+ // ADR-0003: Option A = DependencyGraphEdgesLatest (prod default, has version_constraint).
+ // Set OSSPCKGS_DEPS_TABLE=B locally to use DependenciesLatest (cheaper, no version_constraint).
+diff --git a/services/apps/packages_worker/src/deps-dev/schedules/bootstrap.ts b/services/apps/packages_worker/src/deps-dev/schedules/bootstrap.ts
+index 734c60380e..7add6203a2 100644
+--- a/services/apps/packages_worker/src/deps-dev/schedules/bootstrap.ts
++++ b/services/apps/packages_worker/src/deps-dev/schedules/bootstrap.ts
+@@ -11,7 +11,7 @@ export async function scheduleOsspckgsBootstrap(): Promise<void> {
+     await temporal.schedule.create({
+       scheduleId: 'osspckgs-bootstrap-weekly',
+       spec: {
+-        cronExpressions: ['0 2 * * 0'],
++        cronExpressions: ['0 2 * * 1'],
+       },
+       policies: {
+         overlap: ScheduleOverlapPolicy.SKIP,
+@@ -20,7 +20,7 @@ export async function scheduleOsspckgsBootstrap(): Promise<void> {
+       action: {
+         type: 'startWorkflow',
+         workflowType: bootstrapOsspckgs,
+-        taskQueue: 'deps-dev-ingest',
++        taskQueue: 'bq-dataset-ingest',
+         workflowExecutionTimeout: '12 hours',
+         retry: {
+           initialInterval: '1 minute',
+diff --git a/services/apps/packages_worker/src/deps-dev/workflows/bootstrapOsspckgs.ts b/services/apps/packages_worker/src/deps-dev/workflows/bootstrapOsspckgs.ts
+index 95cdfb5324..d3b7ca4b65 100644
+--- a/services/apps/packages_worker/src/deps-dev/workflows/bootstrapOsspckgs.ts
++++ b/services/apps/packages_worker/src/deps-dev/workflows/bootstrapOsspckgs.ts
+@@ -5,6 +5,7 @@ import {
+   workflowInfo,
+ } from '@temporalio/workflow'
+ 
++import { ingestScorecard } from '../../scorecard/workflows'
+ import type * as depsDevActivities from '../activities'
+ 
+ import { ingestAdvisories } from './ingestAdvisories'
+@@ -224,4 +225,9 @@ export async function bootstrapOsspckgs(opts: {
+       ],
+     })
+   }
++  if (runs('scorecard')) {
++    await executeChild(ingestScorecard, {
++      args: [{ runId, reuseExports: opts.reuseExports, exportName: opts.exportName }],
++    })
++  }
+ }
+diff --git a/services/apps/packages_worker/src/schedules/cleanup.ts b/services/apps/packages_worker/src/schedules/cleanup.ts
+index c63d03937b..b4e165b118 100644
+--- a/services/apps/packages_worker/src/schedules/cleanup.ts
++++ b/services/apps/packages_worker/src/schedules/cleanup.ts
+@@ -20,7 +20,7 @@ export async function scheduleOsspckgsCleanup(): Promise<void> {
+       action: {
+         type: 'startWorkflow',
+         workflowType: cleanupOsspckgs,
+-        taskQueue: 'deps-dev-ingest',
++        taskQueue: 'bq-dataset-ingest',
+         workflowExecutionTimeout: '1 hour',
+         retry: {
+           initialInterval: '1 minute',
+diff --git a/services/apps/packages_worker/src/scorecard/queries/scorecardSql.ts b/services/apps/packages_worker/src/scorecard/queries/scorecardSql.ts
+new file mode 100644
+index 0000000000..cfa7b4c21c
+--- /dev/null
++++ b/services/apps/packages_worker/src/scorecard/queries/scorecardSql.ts
+@@ -0,0 +1,27 @@
++import { SCORECARD_DATASET } from '../../deps-dev/config'
++
++export const SCORECARD_REPOS_SQL = `
++SELECT
++  CASE
++    WHEN repo.name LIKE 'github.com/%' THEN LOWER(CONCAT('https://', repo.name))
++    ELSE CONCAT('https://', repo.name)
++  END AS repo_url,
++  score,
++  date AS scanned_at
++FROM \`${SCORECARD_DATASET}.scorecard-v2_latest\`
++WHERE repo.name IS NOT NULL
++`
++
++export const SCORECARD_CHECKS_SQL = `
++SELECT
++  CASE
++    WHEN r.repo.name LIKE 'github.com/%' THEN LOWER(CONCAT('https://', r.repo.name))
++    ELSE CONCAT('https://', r.repo.name)
++  END AS repo_url,
++  c.name   AS check_name,
++  c.score  AS check_score,
++  c.reason AS check_reason
++FROM \`${SCORECARD_DATASET}.scorecard-v2_latest\` r,
++UNNEST(r.checks) AS c
++WHERE r.repo.name IS NOT NULL
++`
+diff --git a/services/apps/packages_worker/src/scorecard/workflows/index.ts b/services/apps/packages_worker/src/scorecard/workflows/index.ts
+new file mode 100644
+index 0000000000..d3a5ad0770
+--- /dev/null
++++ b/services/apps/packages_worker/src/scorecard/workflows/index.ts
+@@ -0,0 +1 @@
++export { ingestScorecard } from './ingestScorecard'
+diff --git a/services/apps/packages_worker/src/scorecard/workflows/ingestScorecard.ts b/services/apps/packages_worker/src/scorecard/workflows/ingestScorecard.ts
+new file mode 100644
+index 0000000000..ea50b67ace
+--- /dev/null
++++ b/services/apps/packages_worker/src/scorecard/workflows/ingestScorecard.ts
+@@ -0,0 +1,233 @@
++import { proxyActivities } from '@temporalio/workflow'
++
++import type * as depsDevActivities from '../../deps-dev/activities'
++import { SCORECARD_CHECKS_SQL, SCORECARD_REPOS_SQL } from '../queries/scorecardSql'
++
++const { bqExportToGcs } = proxyActivities<typeof depsDevActivities>({
++  startToCloseTimeout: '1 hour',
++  retry: { maximumAttempts: 3, initialInterval: '1 minute', backoffCoefficient: 2 },
++})
++
++const { listParquetFiles } = proxyActivities<typeof depsDevActivities>({
++  startToCloseTimeout: '5 minutes',
++  retry: { maximumAttempts: 3 },
++})
++
++const { gcsParquetToStaging } = proxyActivities<typeof depsDevActivities>({
++  startToCloseTimeout: '2 hours',
++  heartbeatTimeout: '2 minutes',
++  retry: { maximumAttempts: 2 },
++})
++
++const { mergeStagingToTable } = proxyActivities<typeof depsDevActivities>({
++  startToCloseTimeout: '30 minutes',
++  retry: { maximumAttempts: 1 },
++})
++
++const SCORECARD_REPOS_STAGING_TABLE = 'staging.osspckgs_scorecard_repos_raw'
++
++const SCORECARD_REPOS_STAGING_DDL = `
++CREATE UNLOGGED TABLE IF NOT EXISTS staging.osspckgs_scorecard_repos_raw (
++  repo_url   text,
++  score      float8,
++  scanned_at text
++)
++`
++
++// scanned_at is text because BQ DATE → Parquet INT32 DATE → JS Date; pg serialises it as ISO string.
++// Cast to timestamptz happens in merge SQL.
++const SCORECARD_REPOS_PG_COLUMNS = ['repo_url', 'score', 'scanned_at']
++
++const SCORECARD_REPOS_MERGE_SQL = `
++UPDATE repos r
++SET scorecard_score = CASE
++      WHEN s.score IS NULL
++        OR s.score = 'NaN'::float8
++        OR s.score = 'Infinity'::float8
++        OR s.score = '-Infinity'::float8
++      THEN NULL
++      ELSE s.score::numeric(3,1)
++    END,
++    scorecard_last_run_at = s.scanned_at::timestamptz,
++    updated_at = NOW()
++FROM staging.osspckgs_scorecard_repos_raw s
++WHERE r.url = s.repo_url
++`
++
++const SCORECARD_CHECKS_STAGING_TABLE = 'staging.osspckgs_scorecard_checks_raw'
++
++const SCORECARD_CHECKS_STAGING_DDL = `
++CREATE UNLOGGED TABLE IF NOT EXISTS staging.osspckgs_scorecard_checks_raw (
++  repo_url     text,
++  check_name   text,
++  check_score  int,
++  check_reason text
++)
++`
++
++const SCORECARD_CHECKS_PG_COLUMNS = ['repo_url', 'check_name', 'check_score', 'check_reason']
++
++const SCORECARD_CHECKS_MERGE_SQL = `
++INSERT INTO repo_scorecard_checks (repo_id, check_name, score, reason)
++SELECT r.id,
++       s.check_name,
++       NULLIF(s.check_score, -1)::numeric(3,1),
++       s.check_reason
++FROM staging.osspckgs_scorecard_checks_raw s
++JOIN repos r ON r.url = s.repo_url
++ON CONFLICT (repo_id, check_name) DO UPDATE SET
++  score      = EXCLUDED.score,
++  reason     = EXCLUDED.reason,
++  updated_at = NOW()
++`
++
++const ROWS_PER_CHUNK = 1_000_000
++
++export async function ingestScorecard(opts: {
++  runId: string
++  reuseExports?: boolean
++  exportName?: string
++}): Promise<void> {
++  // Step 1: repos aggregate scores (plain UPDATE — repos already exist from deps-dev ingest)
++  const reposExport = await bqExportToGcs({
++    jobKind: 'scorecard_repos',
++    sql: SCORECARD_REPOS_SQL,
++    runId: opts.runId,
++    syncMode: 'full',
++    snapshotAt: null,
++    maxBytesGb: 10,
++    reuseExports: opts.reuseExports,
++    exportName: opts.exportName,
++  })
++
++  const { fileNames: repoFileNames, rowCounts: repoRowCounts } = await listParquetFiles({
++    gcsPrefix: reposExport.gcsPrefix,
++  })
++  const repoTotalFiles = repoFileNames.length
++
++  if (repoTotalFiles === 0) {
++    await mergeStagingToTable({
++      jobId: reposExport.jobId,
++      mergeSql: [],
++      tableNames: [],
++      isFinal: true,
++    })
++  } else {
++    const repoTotalRows = repoRowCounts.reduce((a, b) => a + b, 0)
++    const repoFilesPerChunk =
++      repoTotalRows > 0
++        ? Math.max(1, Math.round((ROWS_PER_CHUNK * repoFileNames.length) / repoTotalRows))
++        : Math.min(repoFileNames.length, 2)
++    const repoTotalChunks = Math.ceil(repoFileNames.length / repoFilesPerChunk)
++    let repoPriorRowsAffected = 0
++    let repoPriorStagingRows = 0
++    const repoPriorTableRowCounts: Record<string, number> = {}
++
++    for (let chunkIndex = 0; chunkIndex < repoTotalChunks; chunkIndex++) {
++      const start = chunkIndex * repoFilesPerChunk
++      const chunk = repoFileNames.slice(start, start + repoFilesPerChunk)
++      const isFinal = chunkIndex === repoTotalChunks - 1
++
++      const { rowsLoaded } = await gcsParquetToStaging({
++        jobId: reposExport.jobId,
++        stagingTable: SCORECARD_REPOS_STAGING_TABLE,
++        stagingDdl: SCORECARD_REPOS_STAGING_DDL,
++        pgColumns: SCORECARD_REPOS_PG_COLUMNS,
++        fileNames: chunk,
++        filesOffset: start,
++        totalFiles: repoTotalFiles,
++        priorStagingRows: repoPriorStagingRows,
++      })
++      repoPriorStagingRows += rowsLoaded
++
++      const { rowsAffected, tableRowCounts } = await mergeStagingToTable({
++        jobId: reposExport.jobId,
++        mergeSql: SCORECARD_REPOS_MERGE_SQL,
++        tableNames: 'repos',
++        isFinal,
++        priorRowsAffected: repoPriorRowsAffected,
++        priorTableRowCounts: repoPriorTableRowCounts,
++        chunkInfo: { index: chunkIndex, total: repoTotalChunks },
++      })
++
++      repoPriorRowsAffected += rowsAffected
++      if (!isFinal) {
++        for (const [k, v] of Object.entries(tableRowCounts)) {
++          repoPriorTableRowCounts[k] = (repoPriorTableRowCounts[k] ?? 0) + v
++        }
++      }
++    }
++  }
++
++  // Step 2: per-check detail (FK → repos, so must run after Step 1)
++  const checksExport = await bqExportToGcs({
++    jobKind: 'scorecard_checks',
++    sql: SCORECARD_CHECKS_SQL,
++    runId: opts.runId,
++    syncMode: 'full',
++    snapshotAt: null,
++    maxBytesGb: 200,
++    reuseExports: opts.reuseExports,
++    exportName: opts.exportName,
++  })
++
++  const { fileNames: checkFileNames, rowCounts: checkRowCounts } = await listParquetFiles({
++    gcsPrefix: checksExport.gcsPrefix,
++  })
++  const checkTotalFiles = checkFileNames.length
++
++  if (checkTotalFiles === 0) {
++    await mergeStagingToTable({
++      jobId: checksExport.jobId,
++      mergeSql: [],
++      tableNames: [],
++      isFinal: true,
++    })
++    return
++  }
++
++  const checkTotalRows = checkRowCounts.reduce((a, b) => a + b, 0)
++  const checkFilesPerChunk =
++    checkTotalRows > 0
++      ? Math.max(1, Math.round((ROWS_PER_CHUNK * checkFileNames.length) / checkTotalRows))
++      : Math.min(checkFileNames.length, 2)
++  const checkTotalChunks = Math.ceil(checkFileNames.length / checkFilesPerChunk)
++  let checkPriorRowsAffected = 0
++  let checkPriorStagingRows = 0
++  const checkPriorTableRowCounts: Record<string, number> = {}
++
++  for (let chunkIndex = 0; chunkIndex < checkTotalChunks; chunkIndex++) {
++    const start = chunkIndex * checkFilesPerChunk
++    const chunk = checkFileNames.slice(start, start + checkFilesPerChunk)
++    const isFinal = chunkIndex === checkTotalChunks - 1
++
++    const { rowsLoaded } = await gcsParquetToStaging({
++      jobId: checksExport.jobId,
++      stagingTable: SCORECARD_CHECKS_STAGING_TABLE,
++      stagingDdl: SCORECARD_CHECKS_STAGING_DDL,
++      pgColumns: SCORECARD_CHECKS_PG_COLUMNS,
++      fileNames: chunk,
++      filesOffset: start,
++      totalFiles: checkTotalFiles,
++      priorStagingRows: checkPriorStagingRows,
++    })
++    checkPriorStagingRows += rowsLoaded
++
++    const { rowsAffected, tableRowCounts } = await mergeStagingToTable({
++      jobId: checksExport.jobId,
++      mergeSql: SCORECARD_CHECKS_MERGE_SQL,
++      tableNames: 'repo_scorecard_checks',
++      isFinal,
++      priorRowsAffected: checkPriorRowsAffected,
++      priorTableRowCounts: checkPriorTableRowCounts,
++      chunkInfo: { index: chunkIndex, total: checkTotalChunks },
++    })
++
++    checkPriorRowsAffected += rowsAffected
++    if (!isFinal) {
++      for (const [k, v] of Object.entries(tableRowCounts)) {
++        checkPriorTableRowCounts[k] = (checkPriorTableRowCounts[k] ?? 0) + v
++      }
++    }
++  }
++}
+diff --git a/services/apps/packages_worker/src/scripts/exportToBucket.ts b/services/apps/packages_worker/src/scripts/exportToBucket.ts
+index c66e77df35..62d60b987d 100644
+--- a/services/apps/packages_worker/src/scripts/exportToBucket.ts
++++ b/services/apps/packages_worker/src/scripts/exportToBucket.ts
+@@ -16,6 +16,7 @@ import { buildPackagesFullSql } from '../deps-dev/queries/packagesSql'
+ import { buildReposSql } from '../deps-dev/queries/reposSql'
+ import { toSystemsFilter } from '../deps-dev/queries/systems'
+ import { buildVersionsFullSql } from '../deps-dev/queries/versionsSql'
++import { SCORECARD_CHECKS_SQL, SCORECARD_REPOS_SQL } from '../scorecard/queries/scorecardSql'
+ 
+ const HELP = `
+ Usage: export-to-bucket <export-name> <parts> [options]
+@@ -35,6 +36,8 @@ Arguments:
+                    counts            Dependents (snapshot date auto-resolved)
+                    advisories        AdvisoriesLatest (no ecosystem filter)
+                    advisory_packages AdvisoriesLatest + PackageVersionsLatest
++                   scorecard_repos   OpenSSF Scorecard aggregate scores (scorecard-v2_latest)
++                   scorecard_checks  OpenSSF Scorecard per-check detail (scorecard-v2_latest UNNEST)
+ 
+ Options:
+   --ecosystems A,B        Comma-separated ecosystems: CARGO,NPM,MAVEN,GO,PYPI,NUGET
+@@ -71,6 +74,8 @@ type ExportPart =
+   | 'counts'
+   | 'advisories'
+   | 'advisory_packages'
++  | 'scorecard_repos'
++  | 'scorecard_checks'
+ 
+ const PART_TO_KIND: Record<ExportPart, OsspckgsJobKind> = {
+   packages: 'packages',
+@@ -81,6 +86,8 @@ const PART_TO_KIND: Record<ExportPart, OsspckgsJobKind> = {
+   counts: 'dependent_counts',
+   advisories: 'advisories',
+   advisory_packages: 'advisory_packages',
++  scorecard_repos: 'scorecard_repos',
++  scorecard_checks: 'scorecard_checks',
+ }
+ 
+ const ALL_PARTS: ExportPart[] = [
+@@ -92,6 +99,8 @@ const ALL_PARTS: ExportPart[] = [
+   'counts',
+   'advisories',
+   'advisory_packages',
++  'scorecard_repos',
++  'scorecard_checks',
+ ]
+ 
+ async function resolveSnapshotDate(table: string, today: string): Promise<string> {
+@@ -289,6 +298,8 @@ async function main(): Promise<void> {
+     counts: buildDependentCountsSql(countsSnapshotDate ?? today),
+     advisories: ADVISORIES_SQL,
+     advisory_packages: buildAdvisoryPackagesSql(systems),
++    scorecard_repos: SCORECARD_REPOS_SQL,
++    scorecard_checks: SCORECARD_CHECKS_SQL,
+   }
+ 
+   const ecosystemLabel = ecosystems ? ecosystems.join(',') : 'all'
+diff --git a/services/apps/packages_worker/src/scripts/triggerBootstrap.ts b/services/apps/packages_worker/src/scripts/triggerBootstrap.ts
+index efe6d95213..39854788e4 100644
+--- a/services/apps/packages_worker/src/scripts/triggerBootstrap.ts
++++ b/services/apps/packages_worker/src/scripts/triggerBootstrap.ts
+@@ -11,6 +11,7 @@ const VALID_KINDS = [
+   'advisories',
+   'advisory_packages',
+   'dependent_counts',
++  'scorecard',
+ ] as const
+ 
+ const HELP = `
+@@ -129,7 +130,7 @@ async function main(): Promise<void> {
+   const tableSuffix = depsTableOption === 'B' ? '-depsB' : ''
+   const workflowId = `bootstrap-osspckgs-${mode}${ecosystemSuffix}${reuseSuffix}${tableSuffix}-${Date.now()}`
+   const handle = await client.workflow.start(bootstrapOsspckgs, {
+-    taskQueue: 'deps-dev-ingest',
++    taskQueue: 'bq-dataset-ingest',
+     workflowId,
+     args: [{ mode, ecosystems, kinds, reuseExports, depsTableOption, exportName }],
+   })
+diff --git a/services/apps/packages_worker/src/workflows/index.ts b/services/apps/packages_worker/src/workflows/index.ts
+index d9c9dde9cc..d48e7ab97e 100644
+--- a/services/apps/packages_worker/src/workflows/index.ts
++++ b/services/apps/packages_worker/src/workflows/index.ts
+@@ -16,3 +16,4 @@ export {
+ } from '../deps-dev/workflows'
+ export { osvSync } from '../osv/workflows'
+ export { mavenCriticalWorkflow, mavenNonCriticalWorkflow } from '../maven/workflows'
++export { ingestScorecard } from '../scorecard/workflows'
+diff --git a/services/libs/data-access-layer/src/osspckgs/ingestJobs.ts b/services/libs/data-access-layer/src/osspckgs/ingestJobs.ts
+index 37951aa2e7..3ff7e4fef4 100644
+--- a/services/libs/data-access-layer/src/osspckgs/ingestJobs.ts
++++ b/services/libs/data-access-layer/src/osspckgs/ingestJobs.ts
+@@ -9,6 +9,8 @@ export type OsspckgsJobKind =
+   | 'advisories'
+   | 'advisory_packages'
+   | 'dependent_counts'
++  | 'scorecard_repos'
++  | 'scorecard_checks'
+ 
+ export type OsspckgsJobStatus =
+   | 'pending'
